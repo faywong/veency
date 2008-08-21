@@ -1,10 +1,11 @@
-#import <LayerKit/LKPurpleServer.h>
 #import <CoreFoundation/CFData.h>
 #import <CoreGraphics/CGBitmapContext.h>
 
 #include <stdint.h>
 #include <stdlib.h>
 #include <rfb/rfb.h>
+
+extern "C" UIImage *UIGetScreenImage();
 
 static const size_t Width = 320;
 static const size_t Height = 480;
@@ -52,9 +53,13 @@ int main(int argc, char *argv[]) {
         uint8_t *buffer1 = (uint8_t *) CGBitmapContextGetData(context1);
         screen->frameBuffer = (char *) buffer0;
 
-        CGImageRef image = LKPurpleServerGetScreenImage(NULL);
-        CGContextDrawImage(context0, rect, image);
-        CFRelease(image);
+        NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+
+        UIImageRef *image = UIGetScreenImage();
+        CGImageRef ref = [image CGImage];
+        CGContextDrawImage(context0, rect, ref);
+
+        [pool release];
 
         if (memcmp(buffer0, buffer1, Size8) != 0)
             rfbMarkRectAsModified(screen, 0, 0, Width, Height);
