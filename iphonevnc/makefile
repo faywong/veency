@@ -11,6 +11,9 @@ iPhoneVNC: iPhoneVNC.mm makefile
             -lvncserver -lz \
 	    -framework CoreFoundation \
 	    -framework CoreGraphics \
-	    -framework LayerKit
+	    -framework UIKit \
+            -lobjc \
+            -framework Foundation
+	ldid -S iPhoneVNC
 
 .PHONY: all clean test

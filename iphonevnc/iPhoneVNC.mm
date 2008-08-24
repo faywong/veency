@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <rfb/rfb.h>
 
-extern "C" UIImage *UIGetScreenImage();
+extern "C" CGImageRef UIGetScreenImage();
 
 static const size_t Width = 320;
 static const size_t Height = 480;
@@ -15,6 +15,9 @@ static const size_t BitsPerComponent = 8;
 static const size_t Stride = Width * BytesPerPixel;
 static const size_t Size32 = Width * Height;
 static const size_t Size8 = Size32 * BytesPerPixel;
+
+extern "C" void *NSPushAutoreleasePool(void *);
+extern "C" void NSPopAutoreleasePool(void *);
 
 CGContextRef CreateContext() {
     uint8_t *buffer = (uint8_t *) malloc(Size8);
@@ -53,13 +56,13 @@ int main(int argc, char *argv[]) {
         uint8_t *buffer1 = (uint8_t *) CGBitmapContextGetData(context1);
         screen->frameBuffer = (char *) buffer0;
 
-        NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
+        void *pool = NSPushAutoreleasePool(0);
 
-        UIImageRef *image = UIGetScreenImage();
-        CGImageRef ref = [image CGImage];
-        CGContextDrawImage(context0, rect, ref);
+        CGImageRef image = UIGetScreenImage();
+        CGContextDrawImage(context0, rect, image);
+        CFRelease(image);
 
-        [pool release];
+        NSPopAutoreleasePool(pool);
 
         if (memcmp(buffer0, buffer1, Size8) != 0)
             rfbMarkRectAsModified(screen, 0, 0, Width, Height);
