@@ -3,9 +3,9 @@ Priority: optional
 Section: Tweaks
 Maintainer: Jay Freeman (saurik) <saurik@saurik.com>
 Architecture: iphoneos-arm
-Version: 0.9.2561-1
+Version: 0.9.2587-1
 Description: remotely watch your iPhone screen
 Name: VNC Server
-Depends: mobilesubstrate (>= 0.9.2568-1), libvncserver
+Depends: mobilesubstrate (>= 0.9.2587-1), libvncserver
 Author: Jay Freeman (saurik) <saurik@saurik.com>
 Depiction: http://cydia.saurik.com/info/com.saurik.iphone.vncs/
