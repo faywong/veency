@@ -1,3 +1,40 @@
+/* Veency - VNC Remote Access Server for iPhoneOS
+ * Copyright (C) 2008  Jay Freeman (saurik)
+*/
+
+/*
+ *        Redistribution and use in source and binary
+ * forms, with or without modification, are permitted
+ * provided that the following conditions are met:
+ *
+ * 1. Redistributions of source code must retain the
+ *    above copyright notice, this list of conditions
+ *    and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the
+ *    above copyright notice, this list of conditions
+ *    and the following disclaimer in the documentation
+ *    and/or other materials provided with the
+ *    distribution.
+ * 3. The name of the author may not be used to endorse
+ *    or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS''
+ * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING,
+ * BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED. IN NO EVENT SHALL THE AUTHOR BE
+ * LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL,
+ * EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR
+ * SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+ * LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR
+ * TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
+ * ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF
+ * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+*/
+
 #include <substrate.h>
 
 #include <rfb/rfb.h>
@@ -13,6 +50,12 @@
 #import <Foundation/Foundation.h>
 #import <IOMobileFramebuffer/IOMobileFramebuffer.h>
 #import <IOKit/IOKitLib.h>
+#import <UIKit/UIModalView.h>
+#import <UIKit/UIModalView-Private.h>
+
+#import <SpringBoard/SBAlertItemsController.h>
+#import <SpringBoard/SBDismissOnlyAlertItem.h>
+#import <SpringBoard/SBStatusBarController.h>
 
 #define IOMobileFramebuffer "/System/Library/PrivateFrameworks/IOMobileFramebuffer.framework/IOMobileFramebuffer"
 
@@ -31,20 +74,81 @@ static bool running_;
 static int buttons_;
 static int x_, y_;
 
-static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
-    x_ = x;
-    y_ = y;
+static unsigned clients_;
 
+static Class $VNCAlertItem;
+static Class $SBAlertItemsController;
+static Class $SBStatusBarController;
+
+static rfbNewClientAction action_ = RFB_CLIENT_ON_HOLD;
+static NSCondition *condition_;
+
+static rfbClientPtr client_;
+
+void VNCAlertItem$alertSheet$buttonClicked$(id self, SEL sel, id sheet, int button) {
+    [condition_ lock];
+
+    switch (button) {
+        case 1:
+            action_ = RFB_CLIENT_ACCEPT;
+            ++clients_;
+            [[$SBStatusBarController sharedStatusBarController] addStatusBarItem:@"Veency"];
+        break;
+
+        case 2:
+            action_ = RFB_CLIENT_REFUSE;
+        break;
+    }
+
+    [condition_ signal];
+    [condition_ unlock];
+    [self dismiss];
+}
+
+void VNCAlertItem$configure$requirePasscodeForActions$(id self, SEL sel, BOOL configure, BOOL require) {
+    UIModalView *sheet([self alertSheet]);
+    [sheet setDelegate:self];
+    [sheet setTitle:@"Remote Access Request"];
+    [sheet setBodyText:[NSString stringWithFormat:@"Accept connection from\n%s?\n\nVeency VNC Server\nby Jay Freeman (saurik)\nsaurik@saurik.com\nhttp://www.saurik.com/", client_->host]];
+    [sheet addButtonWithTitle:@"Accept"];
+    [sheet addButtonWithTitle:@"Reject"];
+}
+
+void VNCAlertItem$performUnlockAction(id self, SEL sel) {
+    [[$SBAlertItemsController sharedInstance] activateAlertItem:self];
+}
+
+@interface VNCBridge : NSObject {
+}
+
++ (void) askForConnection;
++ (void) removeStatusBarItem;
+
+@end
+
+@implementation VNCBridge
+
++ (void) askForConnection {
+    id item = [[[$VNCAlertItem alloc] init] autorelease];
+    [[$SBAlertItemsController sharedInstance] activateAlertItem:item];
+}
+
++ (void) removeStatusBarItem {
+    [[$SBStatusBarController sharedStatusBarController] removeStatusBarItem:@"Veency"];
+}
+
+@end
+
+static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
+    x_ = x; y_ = y;
     int diff = buttons_ ^ buttons;
+    bool twas((buttons_ & 0x1) != 0);
+    bool tis((buttons & 0x1) != 0);
+    buttons_ = buttons;
 
     rfbDefaultPtrAddEvent(buttons, x, y, client);
 
     mach_port_t purple(0);
-
-    bool twas((buttons_ & 0x1) != 0);
-    bool tis((buttons & 0x1) != 0);
-
-    buttons_ = buttons;
 
     if ((diff & 0x10) != 0) {
         struct GSEventRecord record;
@@ -54,18 +158,6 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
         record.type = (buttons & 0x4) != 0 ?
             GSEventTypeHeadsetButtonDown :
             GSEventTypeHeadsetButtonUp;
-
-        record.timestamp = GSCurrentEventTimestamp();
-
-        GSSendSystemEvent(&record);
-    }
-
-    if ((diff & 0x08) != 0 && (buttons & 0x4) != 0) {
-        struct GSEventRecord record;
-
-        memset(&record, 0, sizeof(record));
-
-        record.type = GSEventTypeRingerChanged0;
 
         record.timestamp = GSCurrentEventTimestamp();
 
@@ -193,21 +285,40 @@ static void VNCKeyboard(rfbBool down, rfbKeySym key, rfbClientPtr client) {
         GSSendEvent(&event.record, port);
 }
 
+static void VNCDisconnect(rfbClientPtr client) {
+    if (--clients_ == 0)
+        [VNCBridge performSelectorOnMainThread:@selector(removeStatusBarItem) withObject:nil waitUntilDone:NO];
+}
+
+static rfbNewClientAction VNCClient(rfbClientPtr client) {
+    [condition_ lock];
+    client_ = client;
+    [VNCBridge performSelectorOnMainThread:@selector(askForConnection) withObject:nil waitUntilDone:NO];
+    while (action_ == RFB_CLIENT_ON_HOLD)
+        [condition_ wait];
+    rfbNewClientAction action(action_);
+    action_ = RFB_CLIENT_ON_HOLD;
+    [condition_ unlock];
+    if (action == RFB_CLIENT_ACCEPT)
+        client->clientGoneHook = &VNCDisconnect;
+    return action;
+}
+
+static rfbPixel black_[320][480];
+
 static void *VNCServer(IOMobileFramebufferRef fb) {
     CGRect rect(CGRectMake(0, 0, Width, Height));
 
-    CoreSurfaceBufferRef surface(NULL);
+    /*CoreSurfaceBufferRef surface(NULL);
     kern_return_t value(IOMobileFramebufferGetLayerDefaultSurface(fb, 0, &surface));
     if (value != 0)
-        return NULL;
+        return NULL;*/
+
+    condition_ = [[NSCondition alloc] init];
 
     int argc(1);
     char *arg0(strdup("VNCServer"));
     char *argv[] = {arg0, NULL};
-
-    io_service_t service(IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("IOCoreSurfaceRoot")));
-    CFMutableDictionaryRef properties(NULL);
-    IORegistryEntryCreateCFProperties(service, &properties, kCFAllocatorDefault, kNilOptions);
 
     screen_ = rfbGetScreen(&argc, argv, Width, Height, BitsPerSample, 3, BytesPerPixel);
     screen_->desktopName = "iPhone";
@@ -219,12 +330,25 @@ static void *VNCServer(IOMobileFramebufferRef fb) {
     screen_->serverFormat.greenShift = BitsPerSample * 1;
     screen_->serverFormat.blueShift = BitsPerSample * 0;
 
+    /*io_service_t service(IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("IOCoreSurfaceRoot")));
+    CFMutableDictionaryRef properties(NULL);
+    IORegistryEntryCreateCFProperties(service, &properties, kCFAllocatorDefault, kNilOptions);
+
     CoreSurfaceBufferLock(surface, kCoreSurfaceLockTypeGimmeVRAM);
     screen_->frameBuffer = reinterpret_cast<char *>(CoreSurfaceBufferGetBaseAddress(surface));
     CoreSurfaceBufferUnlock(surface);
+    CFRelease(surface);*/
+
+    screen_->frameBuffer = reinterpret_cast<char *>(black_);
 
     screen_->kbdAddEvent = &VNCKeyboard;
     screen_->ptrAddEvent = &VNCPointer;
+
+    screen_->newClientHook = &VNCClient;
+
+    /*char data[0], mask[0];
+    rfbCursorPtr cursor = rfbMakeXCursor(0, 0, data, mask);
+    rfbSetCursor(screen_, cursor);*/
 
     rfbInitServer(screen_);
     running_ = true;
@@ -235,13 +359,9 @@ static void *VNCServer(IOMobileFramebufferRef fb) {
     running_ = false;
     rfbScreenCleanup(screen_);
 
-    CFRelease(surface);
-
     free(arg0);
     return NULL;
 }
-
-static rfbPixel black_[320][480];
 
 MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
     IOMobileFramebufferRef fb,
@@ -263,12 +383,9 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
         if (buffer == NULL)
             screen_->frameBuffer = reinterpret_cast<char *>(black_);
         else {
-            CoreSurfaceBufferLock(buffer, kCoreSurfaceLockTypeGimmeVRAM);
+            CoreSurfaceBufferLock(buffer, 2);
             rfbPixel (*data)[480] = reinterpret_cast<rfbPixel (*)[480]>(CoreSurfaceBufferGetBaseAddress(buffer));
-            /*memcpy(black_, data, sizeof(black_));
-            screen_->frameBuffer = reinterpret_cast<char *>(black_);*/
-            data[x_][y_] = screen_->whitePixel;
-            screen_->frameBuffer = reinterpret_cast<char *>(data);
+            screen_->frameBuffer = const_cast<char *>(reinterpret_cast<volatile char *>(data));
             CoreSurfaceBufferUnlock(buffer);
         }
     }
@@ -284,7 +401,14 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
 }
 
 extern "C" void TweakInitialize() {
-    if (objc_getClass("SpringBoard") == nil)
-        return;
     MSHookFunction(&IOMobileFramebufferSwapSetLayer, &$IOMobileFramebufferSwapSetLayer, &_IOMobileFramebufferSwapSetLayer);
+
+    $SBAlertItemsController = objc_getClass("SBAlertItemsController");
+    $SBStatusBarController = objc_getClass("SBStatusBarController");
+
+    $VNCAlertItem = objc_allocateClassPair(objc_getClass("SBAlertItem"), "VNCAlertItem", 0);
+    class_addMethod($VNCAlertItem, @selector(alertSheet:buttonClicked:), (IMP) &VNCAlertItem$alertSheet$buttonClicked$, "v@:@i");
+    class_addMethod($VNCAlertItem, @selector(configure:requirePasscodeForActions:), (IMP) &VNCAlertItem$configure$requirePasscodeForActions$, "v@:cc");
+    class_addMethod($VNCAlertItem, @selector(performUnlockAction), (IMP) VNCAlertItem$performUnlockAction, "v@:");
+    objc_registerClassPair($VNCAlertItem);
 }
