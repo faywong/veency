@@ -85,14 +85,18 @@ static NSCondition *condition_;
 
 static rfbClientPtr client_;
 
+static void VNCAccept() {
+    action_ = RFB_CLIENT_ACCEPT;
+    ++clients_;
+    [[$SBStatusBarController sharedStatusBarController] addStatusBarItem:@"Veency"];
+}
+
 void VNCAlertItem$alertSheet$buttonClicked$(id self, SEL sel, id sheet, int button) {
     [condition_ lock];
 
     switch (button) {
         case 1:
-            action_ = RFB_CLIENT_ACCEPT;
-            ++clients_;
-            [[$SBStatusBarController sharedStatusBarController] addStatusBarItem:@"Veency"];
+            VNCAccept();
         break;
 
         case 2:
@@ -129,8 +133,15 @@ void VNCAlertItem$performUnlockAction(id self, SEL sel) {
 @implementation VNCBridge
 
 + (void) askForConnection {
-    id item = [[[$VNCAlertItem alloc] init] autorelease];
-    [[$SBAlertItemsController sharedInstance] activateAlertItem:item];
+    if (false) {
+        [condition_ lock];
+        VNCAccept();
+        [condition_ signal];
+        [condition_ unlock];
+    } else {
+        id item = [[[$VNCAlertItem alloc] init] autorelease];
+        [[$SBAlertItemsController sharedInstance] activateAlertItem:item];
+    }
 }
 
 + (void) removeStatusBarItem {
@@ -354,6 +365,7 @@ static void *VNCServer(IOMobileFramebufferRef fb) {
     running_ = true;
 
     rfbRunEventLoop(screen_, -1, true);
+    NSLog(@"rfbRunEventLoop().");
     return NULL;
 
     running_ = false;
