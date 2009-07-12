@@ -50,8 +50,7 @@
 #import <Foundation/Foundation.h>
 #import <IOMobileFramebuffer/IOMobileFramebuffer.h>
 #import <IOKit/IOKitLib.h>
-#import <UIKit/UIModalView.h>
-#import <UIKit/UIModalView-Private.h>
+#import <UIKit/UIKit.h>
 
 #import <SpringBoard/SBAlertItemsController.h>
 #import <SpringBoard/SBDismissOnlyAlertItem.h>
@@ -150,6 +149,9 @@ void VNCAlertItem$performUnlockAction(id self, SEL sel) {
 
 @end
 
+static mach_port_t (*GSTakePurpleSystemEventPort)(void);
+static bool PurpleAllocated;
+
 static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
     x_ = x; y_ = y;
     int diff = buttons_ ^ buttons;
@@ -247,14 +249,14 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
 
         if (port == 0) {
             if (purple == 0)
-                purple = GSCopyPurpleSystemEventPort();
+                purple = (*GSTakePurpleSystemEventPort)();
             port = purple;
         }
 
         GSSendEvent(&event.record, port);
     }
 
-    if (purple != 0)
+    if (purple != 0 && PurpleAllocated)
         mach_port_deallocate(mach_task_self(), purple);
 }
 
@@ -270,18 +272,9 @@ static void VNCKeyboard(rfbBool down, rfbKeySym key, rfbClientPtr client) {
     if (key > 0xfff)
         return;
 
-    struct {
-        struct GSEventRecord record;
-        struct GSEventKeyInfo data;
-    } event;
-
-    memset(&event, 0, sizeof(event));
-
-    event.record.type = GSEventTypeKeyDown;
-    event.record.timestamp = GSCurrentEventTimestamp();
-    event.record.size = sizeof(event.data);
-
-    event.data.character = key;
+    GSEventRef event(_GSCreateSyntheticKeyEvent(key, YES, YES));
+    GSEventRecord *record(_GSEventGetGSEventRecord(event));
+    record->type = GSEventTypeKeyDown;
 
     mach_port_t port(0);
 
@@ -292,8 +285,21 @@ static void VNCKeyboard(rfbBool down, rfbKeySym key, rfbClientPtr client) {
                 port = [display clientPortAtPosition:CGPointMake(x_, y_)];
     }
 
+    mach_port_t purple(0);
+
+    if (port == 0) {
+        if (purple == 0)
+            purple = (*GSTakePurpleSystemEventPort)();
+        port = purple;
+    }
+
     if (port != 0)
-        GSSendEvent(&event.record, port);
+        GSSendEvent(record, port);
+
+    if (purple != 0 && PurpleAllocated)
+        mach_port_deallocate(mach_task_self(), purple);
+
+    CFRelease(event);
 }
 
 static void VNCDisconnect(rfbClientPtr client) {
@@ -413,6 +419,12 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
 }
 
 extern "C" void TweakInitialize() {
+    GSTakePurpleSystemEventPort = reinterpret_cast<mach_port_t (*)()>(dlsym(RTLD_DEFAULT, "GSGetPurpleSystemEventPort"));
+    if (GSTakePurpleSystemEventPort == NULL) {
+        GSTakePurpleSystemEventPort = reinterpret_cast<mach_port_t (*)()>(dlsym(RTLD_DEFAULT, "GSCopyPurpleSystemEventPort"));
+        PurpleAllocated = true;
+    }
+
     MSHookFunction(&IOMobileFramebufferSwapSetLayer, &$IOMobileFramebufferSwapSetLayer, &_IOMobileFramebufferSwapSetLayer);
 
     $SBAlertItemsController = objc_getClass("SBAlertItemsController");
