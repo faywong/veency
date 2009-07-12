@@ -151,6 +151,12 @@ void VNCAlertItem$performUnlockAction(id self, SEL sel) {
 
 static mach_port_t (*GSTakePurpleSystemEventPort)(void);
 static bool PurpleAllocated;
+static bool Two_;
+
+static void FixRecord(GSEventRecord *record) {
+    if (Two_)
+        memmove(&record->windowContextId, &record->windowContextId + 1, sizeof(*record) - (reinterpret_cast<uint8_t *>(&record->windowContextId + 1) - reinterpret_cast<uint8_t *>(record)) + record->size);
+}
 
 static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
     x_ = x; y_ = y;
@@ -174,6 +180,7 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
 
         record.timestamp = GSCurrentEventTimestamp();
 
+        FixRecord(&record);
         GSSendSystemEvent(&record);
     }
 
@@ -188,6 +195,7 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
 
         record.timestamp = GSCurrentEventTimestamp();
 
+        FixRecord(&record);
         GSSendSystemEvent(&record);
     }
 
@@ -202,6 +210,7 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
 
         record.timestamp = GSCurrentEventTimestamp();
 
+        FixRecord(&record);
         GSSendSystemEvent(&record);
     }
 
@@ -253,6 +262,7 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
             port = purple;
         }
 
+        FixRecord(&event.record);
         GSSendEvent(&event.record, port);
     }
 
@@ -424,6 +434,8 @@ extern "C" void TweakInitialize() {
         GSTakePurpleSystemEventPort = reinterpret_cast<mach_port_t (*)()>(dlsym(RTLD_DEFAULT, "GSCopyPurpleSystemEventPort"));
         PurpleAllocated = true;
     }
+
+    Two_ = dlsym(RTLD_DEFAULT, "GSEventGetWindowContextId") == NULL;
 
     MSHookFunction(&IOMobileFramebufferSwapSetLayer, &$IOMobileFramebufferSwapSetLayer, &_IOMobileFramebufferSwapSetLayer);
 
