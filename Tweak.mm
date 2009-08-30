@@ -88,18 +88,39 @@ static NSLock *lock_;
 
 static rfbClientPtr client_;
 
-static void VNCAccept() {
-    action_ = RFB_CLIENT_ACCEPT;
+@interface VNCBridge : NSObject {
+}
+
++ (void) askForConnection;
++ (void) removeStatusBarItem;
++ (void) registerClient;
+
+@end
+
+@implementation VNCBridge
+
++ (void) askForConnection {
+    [[$SBAlertItemsController sharedInstance] activateAlertItem:[[[$VNCAlertItem alloc] init] autorelease]];
+}
+
++ (void) removeStatusBarItem {
+    [[$SBStatusBarController sharedStatusBarController] removeStatusBarItem:@"Veency"];
+}
+
++ (void) registerClient {
     ++clients_;
     [[$SBStatusBarController sharedStatusBarController] addStatusBarItem:@"Veency"];
 }
+
+@end
 
 MSInstanceMessage2(void, VNCAlertItem, alertSheet,buttonClicked, id, sheet, int, button) {
     [condition_ lock];
 
     switch (button) {
         case 1:
-            VNCAccept();
+            action_ = RFB_CLIENT_ACCEPT;
+            [VNCBridge registerClient];
         break;
 
         case 2:
@@ -124,26 +145,6 @@ MSInstanceMessage2(void, VNCAlertItem, configure,requirePasscodeForActions, BOOL
 MSInstanceMessage0(void, VNCAlertItem, performUnlockAction) {
     [[$SBAlertItemsController sharedInstance] activateAlertItem:self];
 }
-
-@interface VNCBridge : NSObject {
-}
-
-+ (void) askForConnection;
-+ (void) removeStatusBarItem;
-
-@end
-
-@implementation VNCBridge
-
-+ (void) askForConnection {
-    [[$SBAlertItemsController sharedInstance] activateAlertItem:[[[$VNCAlertItem alloc] init] autorelease]];
-}
-
-+ (void) removeStatusBarItem {
-    [[$SBStatusBarController sharedStatusBarController] removeStatusBarItem:@"Veency"];
-}
-
-@end
 
 static mach_port_t (*GSTakePurpleSystemEventPort)(void);
 static bool PurpleAllocated;
@@ -170,9 +171,10 @@ static void VNCSettings() {
         [reinterpret_cast<NSString *>(screen_->authPasswdData) release];
         screen_->authPasswdData = NULL;
 
-        if (NSString *password = [settings objectForKey:@"Password"])
-            if ([password length] != 0)
-                screen_->authPasswdData = [password retain];
+        if (settings != nil)
+            if (NSString *password = [settings objectForKey:@"Password"])
+                if ([password length] != 0)
+                    screen_->authPasswdData = [password retain];
     }
 }
 
@@ -356,8 +358,11 @@ static void VNCDisconnect(rfbClientPtr client) {
 
 static rfbNewClientAction VNCClient(rfbClientPtr client) {
     @synchronized (condition_) {
-        if (screen_->authPasswdData != NULL)
+        if (screen_->authPasswdData != NULL) {
+            [VNCBridge performSelectorOnMainThread:@selector(registerClient) withObject:nil waitUntilDone:YES];
+            client->clientGoneHook = &VNCDisconnect;
             return RFB_CLIENT_ACCEPT;
+        }
     }
 
     [condition_ lock];
@@ -368,6 +373,7 @@ static rfbNewClientAction VNCClient(rfbClientPtr client) {
     rfbNewClientAction action(action_);
     action_ = RFB_CLIENT_ON_HOLD;
     [condition_ unlock];
+
     if (action == RFB_CLIENT_ACCEPT)
         client->clientGoneHook = &VNCDisconnect;
     return action;
