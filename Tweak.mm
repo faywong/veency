@@ -1,5 +1,5 @@
 /* Veency - VNC Remote Access Server for iPhoneOS
- * Copyright (C) 2008  Jay Freeman (saurik)
+ * Copyright (C) 2008-2009  Jay Freeman (saurik)
 */
 
 /*
@@ -35,6 +35,9 @@
  * ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+#define _trace() \
+    fprintf(stderr, "_trace()@%s:%u[%s]\n", __FILE__, __LINE__, __FUNCTION__)
+
 #include <substrate.h>
 
 #include <rfb/rfb.h>
@@ -56,8 +59,6 @@
 #import <SpringBoard/SBDismissOnlyAlertItem.h>
 #import <SpringBoard/SBStatusBarController.h>
 
-#define IOMobileFramebuffer "/System/Library/PrivateFrameworks/IOMobileFramebuffer.framework/IOMobileFramebuffer"
-
 static const size_t Width = 320;
 static const size_t Height = 480;
 static const size_t BytesPerPixel = 4;
@@ -67,7 +68,7 @@ static const size_t Stride = Width * BytesPerPixel;
 static const size_t Size32 = Width * Height;
 static const size_t Size8 = Size32 * BytesPerPixel;
 
-static pthread_t thread_;
+static NSMutableSet *handlers_;
 static rfbScreenInfoPtr screen_;
 static bool running_;
 static int buttons_;
@@ -75,12 +76,15 @@ static int x_, y_;
 
 static unsigned clients_;
 
+MSClassHook(SBAlertItemsController)
+MSClassHook(SBStatusBarController)
+
+@class VNCAlertItem;
 static Class $VNCAlertItem;
-static Class $SBAlertItemsController;
-static Class $SBStatusBarController;
 
 static rfbNewClientAction action_ = RFB_CLIENT_ON_HOLD;
 static NSCondition *condition_;
+static NSLock *lock_;
 
 static rfbClientPtr client_;
 
@@ -90,7 +94,7 @@ static void VNCAccept() {
     [[$SBStatusBarController sharedStatusBarController] addStatusBarItem:@"Veency"];
 }
 
-void VNCAlertItem$alertSheet$buttonClicked$(id self, SEL sel, id sheet, int button) {
+MSInstanceMessage2(void, VNCAlertItem, alertSheet,buttonClicked, id, sheet, int, button) {
     [condition_ lock];
 
     switch (button) {
@@ -108,16 +112,16 @@ void VNCAlertItem$alertSheet$buttonClicked$(id self, SEL sel, id sheet, int butt
     [self dismiss];
 }
 
-void VNCAlertItem$configure$requirePasscodeForActions$(id self, SEL sel, BOOL configure, BOOL require) {
+MSInstanceMessage2(void, VNCAlertItem, configure,requirePasscodeForActions, BOOL, configure, BOOL, require) {
     UIModalView *sheet([self alertSheet]);
     [sheet setDelegate:self];
     [sheet setTitle:@"Remote Access Request"];
-    [sheet setBodyText:[NSString stringWithFormat:@"Accept connection from\n%s?\n\nVeency VNC Server\nby Jay Freeman (saurik)\nsaurik@saurik.com\nhttp://www.saurik.com/", client_->host]];
+    [sheet setBodyText:[NSString stringWithFormat:@"Accept connection from\n%s?\n\nVeency VNC Server\nby Jay Freeman (saurik)\nsaurik@saurik.com\nhttp://www.saurik.com/\n\nSet a VNC password in Settings!", client_->host]];
     [sheet addButtonWithTitle:@"Accept"];
     [sheet addButtonWithTitle:@"Reject"];
 }
 
-void VNCAlertItem$performUnlockAction(id self, SEL sel) {
+MSInstanceMessage0(void, VNCAlertItem, performUnlockAction) {
     [[$SBAlertItemsController sharedInstance] activateAlertItem:self];
 }
 
@@ -132,15 +136,7 @@ void VNCAlertItem$performUnlockAction(id self, SEL sel) {
 @implementation VNCBridge
 
 + (void) askForConnection {
-    if (false) {
-        [condition_ lock];
-        VNCAccept();
-        [condition_ signal];
-        [condition_ unlock];
-    } else {
-        id item = [[[$VNCAlertItem alloc] init] autorelease];
-        [[$SBAlertItemsController sharedInstance] activateAlertItem:item];
-    }
+    [[$SBAlertItemsController sharedInstance] activateAlertItem:[[[$VNCAlertItem alloc] init] autorelease]];
 }
 
 + (void) removeStatusBarItem {
@@ -156,6 +152,47 @@ static bool Two_;
 static void FixRecord(GSEventRecord *record) {
     if (Two_)
         memmove(&record->windowContextId, &record->windowContextId + 1, sizeof(*record) - (reinterpret_cast<uint8_t *>(&record->windowContextId + 1) - reinterpret_cast<uint8_t *>(record)) + record->size);
+}
+
+static void VNCSettings() {
+    NSDictionary *settings([NSDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"%@/Library/Preferences/com.saurik.Veency.plist", NSHomeDirectory()]]);
+
+    @synchronized (lock_) {
+        for (NSValue *handler in handlers_)
+            rfbUnregisterSecurityHandler(reinterpret_cast<rfbSecurityHandler *>([handler pointerValue]));
+        [handlers_ removeAllObjects];
+    }
+
+    @synchronized (condition_) {
+        if (screen_ == NULL)
+            return;
+
+        [reinterpret_cast<NSString *>(screen_->authPasswdData) release];
+        screen_->authPasswdData = NULL;
+
+        if (NSString *password = [settings objectForKey:@"Password"])
+            if ([password length] != 0)
+                screen_->authPasswdData = [password retain];
+    }
+}
+
+static void VNCNotifySettings(
+    CFNotificationCenterRef center,
+    void *observer,
+    CFStringRef name,
+    const void *object,
+    CFDictionaryRef info
+) {
+    VNCSettings();
+}
+
+static rfbBool VNCCheck(rfbClientPtr client, const char *data, int size) {
+    @synchronized (condition_) {
+        if (NSString *password = reinterpret_cast<NSString *>(screen_->authPasswdData)) {
+            rfbEncryptBytes(client->authChallenge, const_cast<char *>([password UTF8String]));
+            return memcmp(client->authChallenge, data, size) == 0;
+        } return TRUE;
+    }
 }
 
 static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
@@ -318,6 +355,11 @@ static void VNCDisconnect(rfbClientPtr client) {
 }
 
 static rfbNewClientAction VNCClient(rfbClientPtr client) {
+    @synchronized (condition_) {
+        if (screen_->authPasswdData != NULL)
+            return RFB_CLIENT_ACCEPT;
+    }
+
     [condition_ lock];
     client_ = client;
     [VNCBridge performSelectorOnMainThread:@selector(askForConnection) withObject:nil waitUntilDone:NO];
@@ -333,22 +375,19 @@ static rfbNewClientAction VNCClient(rfbClientPtr client) {
 
 static rfbPixel black_[320][480];
 
-static void *VNCServer(IOMobileFramebufferRef fb) {
-    CGRect rect(CGRectMake(0, 0, Width, Height));
+static void VNCSetup() {
+    @synchronized (condition_) {
+        int argc(1);
+        char *arg0(strdup("VNCServer"));
+        char *argv[] = {arg0, NULL};
+        screen_ = rfbGetScreen(&argc, argv, Width, Height, BitsPerSample, 3, BytesPerPixel);
+        free(arg0);
 
-    /*CoreSurfaceBufferRef surface(NULL);
-    kern_return_t value(IOMobileFramebufferGetLayerDefaultSurface(fb, 0, &surface));
-    if (value != 0)
-        return NULL;*/
+        VNCSettings();
+    }
 
-    condition_ = [[NSCondition alloc] init];
+    screen_->desktopName = strdup([[[NSProcessInfo processInfo] hostName] UTF8String]);
 
-    int argc(1);
-    char *arg0(strdup("VNCServer"));
-    char *argv[] = {arg0, NULL};
-
-    screen_ = rfbGetScreen(&argc, argv, Width, Height, BitsPerSample, 3, BytesPerPixel);
-    screen_->desktopName = "iPhone";
     screen_->alwaysShared = TRUE;
     screen_->handleEventsEagerly = TRUE;
     screen_->deferUpdateTime = 5;
@@ -357,38 +396,48 @@ static void *VNCServer(IOMobileFramebufferRef fb) {
     screen_->serverFormat.greenShift = BitsPerSample * 1;
     screen_->serverFormat.blueShift = BitsPerSample * 0;
 
-    /*io_service_t service(IOServiceGetMatchingService(kIOMasterPortDefault, IOServiceMatching("IOCoreSurfaceRoot")));
-    CFMutableDictionaryRef properties(NULL);
-    IORegistryEntryCreateCFProperties(service, &properties, kCFAllocatorDefault, kNilOptions);
-
-    CoreSurfaceBufferLock(surface, kCoreSurfaceLockTypeGimmeVRAM);
-    screen_->frameBuffer = reinterpret_cast<char *>(CoreSurfaceBufferGetBaseAddress(surface));
-    CoreSurfaceBufferUnlock(surface);
-    CFRelease(surface);*/
-
     screen_->frameBuffer = reinterpret_cast<char *>(black_);
 
     screen_->kbdAddEvent = &VNCKeyboard;
     screen_->ptrAddEvent = &VNCPointer;
 
     screen_->newClientHook = &VNCClient;
+    screen_->passwordCheck = &VNCCheck;
 
     /*char data[0], mask[0];
     rfbCursorPtr cursor = rfbMakeXCursor(0, 0, data, mask);
     rfbSetCursor(screen_, cursor);*/
+}
 
-    rfbInitServer(screen_);
-    running_ = true;
+static void VNCEnabled() {
+    [lock_ lock];
 
-    rfbRunEventLoop(screen_, -1, true);
-    NSLog(@"rfbRunEventLoop().");
-    return NULL;
+    bool enabled(true);
+    if (NSDictionary *settings = [NSDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"%@/Library/Preferences/com.saurik.Veency.plist", NSHomeDirectory()]])
+        if (NSNumber *number = [settings objectForKey:@"Enabled"])
+            enabled = [number boolValue];
+    if (enabled != running_)
+        if (enabled) {
+            running_ = true;
+            screen_->socketState = RFB_SOCKET_INIT;
+            rfbInitServer(screen_);
+            rfbRunEventLoop(screen_, -1, true);
+        } else {
+            rfbShutdownServer(screen_, true);
+            running_ = false;
+        }
 
-    running_ = false;
-    rfbScreenCleanup(screen_);
+    [lock_ unlock];
+}
 
-    free(arg0);
-    return NULL;
+static void VNCNotifyEnabled(
+    CFNotificationCenterRef center,
+    void *observer,
+    CFStringRef name,
+    const void *object,
+    CFDictionaryRef info
+) {
+    VNCEnabled();
 }
 
 MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
@@ -399,14 +448,6 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
     CGRect frame,
     int flags
 ) {
-    /*if (
-        bounds.origin.x != 0 || bounds.origin.y != 0 || bounds.size.width != 320 || bounds.size.height != 480 ||
-        frame.origin.x != 0 || frame.origin.y != 0 || frame.size.width != 320 || frame.size.height != 480
-    ) NSLog(@"VNC:%f,%f:%f,%f:%f,%f:%f,%f",
-        bounds.origin.x, bounds.origin.y, bounds.size.width, bounds.size.height,
-        frame.origin.x, frame.origin.y, frame.size.width, frame.size.height
-    );*/
-
     if (running_) {
         if (buffer == NULL)
             screen_->frameBuffer = reinterpret_cast<char *>(black_);
@@ -416,35 +457,60 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
             screen_->frameBuffer = const_cast<char *>(reinterpret_cast<volatile char *>(data));
             CoreSurfaceBufferUnlock(buffer);
         }
+
+        rfbMarkRectAsModified(screen_, 0, 0, Width, Height);
     }
 
-    kern_return_t value(_IOMobileFramebufferSwapSetLayer(fb, layer, buffer, bounds, frame, flags));
-
-    if (thread_ == NULL)
-        pthread_create(&thread_, NULL, &VNCServer, fb);
-    else if (running_)
-        rfbMarkRectAsModified(screen_, 0, 0, Width, Height);
-
-    return value;
+    return _IOMobileFramebufferSwapSetLayer(fb, layer, buffer, bounds, frame, flags);
 }
 
-extern "C" void TweakInitialize() {
-    GSTakePurpleSystemEventPort = reinterpret_cast<mach_port_t (*)()>(dlsym(RTLD_DEFAULT, "GSGetPurpleSystemEventPort"));
+MSHook(void, rfbRegisterSecurityHandler, rfbSecurityHandler *handler) {
+    NSAutoreleasePool *pool([[NSAutoreleasePool alloc] init]);
+
+    @synchronized (lock_) {
+        [handlers_ addObject:[NSValue valueWithPointer:handler]];
+        _rfbRegisterSecurityHandler(handler);
+    }
+
+    [pool release];
+}
+
+MSInitialize {
+    NSAutoreleasePool *pool([[NSAutoreleasePool alloc] init]);
+
+    MSHookSymbol(GSTakePurpleSystemEventPort, "GSGetPurpleSystemEventPort");
     if (GSTakePurpleSystemEventPort == NULL) {
-        GSTakePurpleSystemEventPort = reinterpret_cast<mach_port_t (*)()>(dlsym(RTLD_DEFAULT, "GSCopyPurpleSystemEventPort"));
+        MSHookSymbol(GSTakePurpleSystemEventPort, "GSCopyPurpleSystemEventPort");
         PurpleAllocated = true;
     }
 
     Two_ = dlsym(RTLD_DEFAULT, "GSEventGetWindowContextId") == NULL;
 
-    MSHookFunction(&IOMobileFramebufferSwapSetLayer, &$IOMobileFramebufferSwapSetLayer, &_IOMobileFramebufferSwapSetLayer);
-
-    $SBAlertItemsController = objc_getClass("SBAlertItemsController");
-    $SBStatusBarController = objc_getClass("SBStatusBarController");
+    MSHookFunction(&IOMobileFramebufferSwapSetLayer, MSHake(IOMobileFramebufferSwapSetLayer));
+    MSHookFunction(&rfbRegisterSecurityHandler, MSHake(rfbRegisterSecurityHandler));
 
     $VNCAlertItem = objc_allocateClassPair(objc_getClass("SBAlertItem"), "VNCAlertItem", 0);
-    class_addMethod($VNCAlertItem, @selector(alertSheet:buttonClicked:), (IMP) &VNCAlertItem$alertSheet$buttonClicked$, "v@:@i");
-    class_addMethod($VNCAlertItem, @selector(configure:requirePasscodeForActions:), (IMP) &VNCAlertItem$configure$requirePasscodeForActions$, "v@:cc");
-    class_addMethod($VNCAlertItem, @selector(performUnlockAction), (IMP) VNCAlertItem$performUnlockAction, "v@:");
+    MSAddMessage2(VNCAlertItem, "v@:@i", alertSheet,buttonClicked);
+    MSAddMessage2(VNCAlertItem, "v@:cc", configure,requirePasscodeForActions);
+    MSAddMessage0(VNCAlertItem, "v@:", performUnlockAction);
     objc_registerClassPair($VNCAlertItem);
+
+    CFNotificationCenterAddObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        NULL, &VNCNotifyEnabled, CFSTR("com.saurik.Veency-Enabled"), NULL, 0
+    );
+
+    CFNotificationCenterAddObserver(
+        CFNotificationCenterGetDarwinNotifyCenter(),
+        NULL, &VNCNotifySettings, CFSTR("com.saurik.Veency-Settings"), NULL, 0
+    );
+
+    condition_ = [[NSCondition alloc] init];
+    lock_ = [[NSLock alloc] init];
+    handlers_ = [[NSMutableSet alloc] init];
+
+    [pool release];
+
+    VNCSetup();
+    VNCEnabled();
 }
