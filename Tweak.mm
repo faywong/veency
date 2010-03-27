@@ -1,5 +1,5 @@
 /* Veency - VNC Remote Access Server for iPhoneOS
- * Copyright (C) 2008-2009  Jay Freeman (saurik)
+ * Copyright (C) 2008-2010  Jay Freeman (saurik)
 */
 
 /*
@@ -37,6 +37,8 @@
 
 #define _trace() \
     fprintf(stderr, "_trace()@%s:%u[%s]\n", __FILE__, __LINE__, __FUNCTION__)
+#define _unlikely(expr) \
+    __builtin_expect(expr, 0)
 
 #include <substrate.h>
 
@@ -59,14 +61,11 @@
 #import <SpringBoard/SBDismissOnlyAlertItem.h>
 #import <SpringBoard/SBStatusBarController.h>
 
-static const size_t Width = 320;
-static const size_t Height = 480;
+static size_t Width = 320;
+static size_t Height = 480;
+
 static const size_t BytesPerPixel = 4;
 static const size_t BitsPerSample = 8;
-
-static const size_t Stride = Width * BytesPerPixel;
-static const size_t Size32 = Width * Height;
-static const size_t Size8 = Size32 * BytesPerPixel;
 
 static NSMutableSet *handlers_;
 static rfbScreenInfoPtr screen_;
@@ -75,6 +74,53 @@ static int buttons_;
 static int x_, y_;
 
 static unsigned clients_;
+
+static CFMessagePortRef ashikase_;
+static bool cursor_;
+
+static bool Ashikase(bool always) {
+    if (ashikase_ == NULL)
+        ashikase_ = CFMessagePortCreateRemote(kCFAllocatorDefault, CFSTR("jp.ashikase.mousesupport"));
+    return ashikase_ != NULL && (always || cursor_);
+}
+
+static CFDataRef cfTrue_;
+static CFDataRef cfFalse_;
+
+typedef struct {
+    float x, y;
+    int buttons;
+    BOOL absolute;
+} MouseEvent;
+
+static MouseEvent event_;
+static CFDataRef cfEvent_;
+
+typedef enum {
+    MouseMessageTypeEvent,
+    MouseMessageTypeSetEnabled
+} MouseMessageType;
+
+static void AshikaseSetEnabled(bool enabled, bool always) {
+    if (!Ashikase(always))
+        return;
+
+    CFMessagePortSendRequest(ashikase_, MouseMessageTypeSetEnabled, cursor_ ? cfTrue_ : cfFalse_, 0, 0, NULL, NULL);
+}
+
+static bool AshikaseSendEvent(float x, float y, int buttons = 0) {
+    if (!Ashikase(false))
+        return false;
+
+    event_.x = x;
+    event_.y = y;
+    event_.buttons = buttons;
+    event_.absolute = true;
+
+    CFMessagePortSendRequest(ashikase_, MouseMessageTypeEvent, cfEvent_, 0, 0, NULL, NULL);
+
+    return true;
+}
 
 MSClassHook(SBAlertItemsController)
 MSClassHook(SBStatusBarController)
@@ -104,11 +150,13 @@ static rfbClientPtr client_;
 }
 
 + (void) removeStatusBarItem {
+    AshikaseSetEnabled(false, false);
     [[$SBStatusBarController sharedStatusBarController] removeStatusBarItem:@"Veency"];
 }
 
 + (void) registerClient {
     ++clients_;
+    AshikaseSetEnabled(true, false);
     [[$SBStatusBarController sharedStatusBarController] addStatusBarItem:@"Veency"];
 }
 
@@ -120,7 +168,10 @@ MSInstanceMessage2(void, VNCAlertItem, alertSheet,buttonClicked, id, sheet, int,
     switch (button) {
         case 1:
             action_ = RFB_CLIENT_ACCEPT;
-            [VNCBridge registerClient];
+
+            @synchronized (condition_) {
+                [VNCBridge registerClient];
+            }
         break;
 
         case 2:
@@ -175,6 +226,14 @@ static void VNCSettings() {
             if (NSString *password = [settings objectForKey:@"Password"])
                 if ([password length] != 0)
                     screen_->authPasswdData = [password retain];
+
+        NSNumber *cursor = [settings objectForKey:@"ShowCursor"];
+        cursor_ = cursor == nil ? true : [cursor boolValue];
+
+        if (clients_ != 0) {
+            AshikaseSetEnabled(cursor_, true);
+            AshikaseSendEvent(x_, y_);
+        }
     }
 }
 
@@ -205,6 +264,9 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
     buttons_ = buttons;
 
     rfbDefaultPtrAddEvent(buttons, x, y, client);
+
+    if (AshikaseSendEvent(x, y, buttons))
+        return;
 
     mach_port_t purple(0);
 
@@ -352,8 +414,10 @@ static void VNCKeyboard(rfbBool down, rfbKeySym key, rfbClientPtr client) {
 }
 
 static void VNCDisconnect(rfbClientPtr client) {
-    if (--clients_ == 0)
-        [VNCBridge performSelectorOnMainThread:@selector(removeStatusBarItem) withObject:nil waitUntilDone:NO];
+    @synchronized (condition_) {
+        if (--clients_ == 0)
+            [VNCBridge performSelectorOnMainThread:@selector(removeStatusBarItem) withObject:nil waitUntilDone:YES];
+    }
 }
 
 static rfbNewClientAction VNCClient(rfbClientPtr client) {
@@ -410,9 +474,9 @@ static void VNCSetup() {
     screen_->newClientHook = &VNCClient;
     screen_->passwordCheck = &VNCCheck;
 
-    /*char data[0], mask[0];
+    char data[0], mask[0];
     rfbCursorPtr cursor = rfbMakeXCursor(0, 0, data, mask);
-    rfbSetCursor(screen_, cursor);*/
+    rfbSetCursor(screen_, cursor);
 }
 
 static void VNCEnabled() {
@@ -422,6 +486,7 @@ static void VNCEnabled() {
     if (NSDictionary *settings = [NSDictionary dictionaryWithContentsOfFile:[NSString stringWithFormat:@"%@/Library/Preferences/com.saurik.Veency.plist", NSHomeDirectory()]])
         if (NSNumber *number = [settings objectForKey:@"Enabled"])
             enabled = [number boolValue];
+
     if (enabled != running_)
         if (enabled) {
             running_ = true;
@@ -454,7 +519,10 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
     CGRect frame,
     int flags
 ) {
-    if (running_) {
+    if (_unlikely(screen_ == NULL)) {
+        VNCSetup();
+        VNCEnabled();
+    } else if (_unlikely(clients_ != 0)) {
         if (buffer == NULL)
             screen_->frameBuffer = reinterpret_cast<char *>(black_);
         else {
@@ -517,6 +585,13 @@ MSInitialize {
 
     [pool release];
 
-    VNCSetup();
-    VNCEnabled();
+    bool value;
+
+    value = true;
+    cfTrue_ = CFDataCreate(kCFAllocatorDefault, reinterpret_cast<UInt8 *>(&value), sizeof(value));
+
+    value = false;
+    cfFalse_ = CFDataCreate(kCFAllocatorDefault, reinterpret_cast<UInt8 *>(&value), sizeof(value));
+
+    cfEvent_ = CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, reinterpret_cast<UInt8 *>(&event_), sizeof(event_), kCFAllocatorNull);
 }
