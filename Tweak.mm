@@ -62,6 +62,8 @@
 #import <SpringBoard/SBDismissOnlyAlertItem.h>
 #import <SpringBoard/SBStatusBarController.h>
 
+extern "C" void CoreSurfaceBufferFlushProcessorCaches(CoreSurfaceBufferRef buffer);
+
 static size_t width_;
 static size_t height_;
 
@@ -80,9 +82,16 @@ static CFMessagePortRef ashikase_;
 static bool cursor_;
 
 static bool Ashikase(bool always) {
+    if (!always && !cursor_)
+        return false;
+
     if (ashikase_ == NULL)
         ashikase_ = CFMessagePortCreateRemote(kCFAllocatorDefault, CFSTR("jp.ashikase.mousesupport"));
-    return ashikase_ != NULL && (always || cursor_);
+    if (ashikase_ != NULL)
+        return true;
+
+    cursor_ = false;
+    return false;
 }
 
 static CFDataRef cfTrue_;
@@ -484,9 +493,7 @@ static void VNCSetup() {
     screen_->newClientHook = &VNCClient;
     screen_->passwordCheck = &VNCCheck;
 
-    char data[0], mask[0];
-    rfbCursorPtr cursor = rfbMakeXCursor(0, 0, data, mask);
-    rfbSetCursor(screen_, cursor);
+    screen_->cursor = NULL;
 }
 
 static void VNCEnabled() {
@@ -545,11 +552,17 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
             VNCBlack();
         else {
             CoreSurfaceBufferLock(buffer, 2);
-            rfbPixel *data(reinterpret_cast<rfbPixel *>(CoreSurfaceBufferGetBaseAddress(buffer)));
+            volatile rfbPixel *data(reinterpret_cast<volatile rfbPixel *>(CoreSurfaceBufferGetBaseAddress(buffer)));
+
+            rfbPixel corner(data[0]);
+            data[0] = 0;
+            data[0] = corner;
+
             screen_->frameBuffer = const_cast<char *>(reinterpret_cast<volatile char *>(data));
             CoreSurfaceBufferUnlock(buffer);
         }
 
+        //CoreSurfaceBufferFlushProcessorCaches(buffer);
         rfbMarkRectAsModified(screen_, 0, 0, width_, height_);
     }
 
