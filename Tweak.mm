@@ -46,6 +46,7 @@
 #include <rfb/keysym.h>
 
 #include <mach/mach_port.h>
+#include <sys/mman.h>
 
 #import <QuartzCore/CAWindowServer.h>
 #import <QuartzCore/CAWindowServerDisplay.h>
@@ -61,8 +62,8 @@
 #import <SpringBoard/SBDismissOnlyAlertItem.h>
 #import <SpringBoard/SBStatusBarController.h>
 
-static size_t Width = 320;
-static size_t Height = 480;
+static size_t width_;
+static size_t height_;
 
 static const size_t BytesPerPixel = 4;
 static const size_t BitsPerSample = 8;
@@ -246,8 +247,11 @@ static void VNCNotifySettings(
 static rfbBool VNCCheck(rfbClientPtr client, const char *data, int size) {
     @synchronized (condition_) {
         if (NSString *password = reinterpret_cast<NSString *>(screen_->authPasswdData)) {
+            NSAutoreleasePool *pool([[NSAutoreleasePool alloc] init]);
             rfbEncryptBytes(client->authChallenge, const_cast<char *>([password UTF8String]));
-            return memcmp(client->authChallenge, data, size) == 0;
+            bool good(memcmp(client->authChallenge, data, size) == 0);
+            [pool release];
+            return good;
         } return TRUE;
     }
 }
@@ -441,14 +445,22 @@ static rfbNewClientAction VNCClient(rfbClientPtr client) {
     return action;
 }
 
-static rfbPixel black_[320][480];
+static rfbPixel *black_;
+
+static void VNCBlack() {
+    if (_unlikely(black_ == NULL))
+        black_ = reinterpret_cast<rfbPixel *>(mmap(NULL, sizeof(rfbPixel) * width_ * height_, PROT_READ, MAP_ANON | MAP_PRIVATE | MAP_NOCACHE, VM_FLAGS_PURGABLE, 0));
+    screen_->frameBuffer = reinterpret_cast<char *>(black_);
+}
 
 static void VNCSetup() {
+    rfbLogEnable(false);
+
     @synchronized (condition_) {
         int argc(1);
         char *arg0(strdup("VNCServer"));
         char *argv[] = {arg0, NULL};
-        screen_ = rfbGetScreen(&argc, argv, Width, Height, BitsPerSample, 3, BytesPerPixel);
+        screen_ = rfbGetScreen(&argc, argv, width_, height_, BitsPerSample, 3, BytesPerPixel);
         free(arg0);
 
         VNCSettings();
@@ -464,7 +476,7 @@ static void VNCSetup() {
     screen_->serverFormat.greenShift = BitsPerSample * 1;
     screen_->serverFormat.blueShift = BitsPerSample * 0;
 
-    screen_->frameBuffer = reinterpret_cast<char *>(black_);
+    VNCBlack();
 
     screen_->kbdAddEvent = &VNCKeyboard;
     screen_->ptrAddEvent = &VNCPointer;
@@ -518,19 +530,27 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
     int flags
 ) {
     if (_unlikely(screen_ == NULL)) {
+        CGSize size;
+        IOMobileFramebufferGetDisplaySize(fb, &size);
+
+        width_ = size.width;
+        height_ = size.height;
+
+        NSAutoreleasePool *pool([[NSAutoreleasePool alloc] init]);
         VNCSetup();
         VNCEnabled();
+        [pool release];
     } else if (_unlikely(clients_ != 0)) {
         if (buffer == NULL)
-            screen_->frameBuffer = reinterpret_cast<char *>(black_);
+            VNCBlack();
         else {
             CoreSurfaceBufferLock(buffer, 2);
-            rfbPixel (*data)[480] = reinterpret_cast<rfbPixel (*)[480]>(CoreSurfaceBufferGetBaseAddress(buffer));
+            rfbPixel *data(reinterpret_cast<rfbPixel *>(CoreSurfaceBufferGetBaseAddress(buffer)));
             screen_->frameBuffer = const_cast<char *>(reinterpret_cast<volatile char *>(data));
             CoreSurfaceBufferUnlock(buffer);
         }
 
-        rfbMarkRectAsModified(screen_, 0, 0, Width, Height);
+        rfbMarkRectAsModified(screen_, 0, 0, width_, height_);
     }
 
     return _IOMobileFramebufferSwapSetLayer(fb, layer, buffer, bounds, frame, flags);
