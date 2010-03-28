@@ -101,25 +101,23 @@ typedef enum {
     MouseMessageTypeSetEnabled
 } MouseMessageType;
 
-static void AshikaseSetEnabled(bool enabled, bool always) {
-    if (!Ashikase(always))
-        return;
-
-    CFMessagePortSendRequest(ashikase_, MouseMessageTypeSetEnabled, cursor_ ? cfTrue_ : cfFalse_, 0, 0, NULL, NULL);
-}
-
-static bool AshikaseSendEvent(float x, float y, int buttons = 0) {
-    if (!Ashikase(false))
-        return false;
-
+static void AshikaseSendEvent(float x, float y, int buttons = 0) {
     event_.x = x;
     event_.y = y;
     event_.buttons = buttons;
     event_.absolute = true;
 
     CFMessagePortSendRequest(ashikase_, MouseMessageTypeEvent, cfEvent_, 0, 0, NULL, NULL);
+}
 
-    return true;
+static void AshikaseSetEnabled(bool enabled, bool always) {
+    if (!Ashikase(always))
+        return;
+
+    CFMessagePortSendRequest(ashikase_, MouseMessageTypeSetEnabled, enabled ? cfTrue_ : cfFalse_, 0, 0, NULL, NULL);
+
+    if (enabled)
+        AshikaseSendEvent(x_, y_);
 }
 
 MSClassHook(SBAlertItemsController)
@@ -230,10 +228,8 @@ static void VNCSettings() {
         NSNumber *cursor = [settings objectForKey:@"ShowCursor"];
         cursor_ = cursor == nil ? true : [cursor boolValue];
 
-        if (clients_ != 0) {
+        if (clients_ != 0)
             AshikaseSetEnabled(cursor_, true);
-            AshikaseSendEvent(x_, y_);
-        }
     }
 }
 
@@ -265,8 +261,10 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
 
     rfbDefaultPtrAddEvent(buttons, x, y, client);
 
-    if (AshikaseSendEvent(x, y, buttons))
+    if (Ashikase(false)) {
+        AshikaseSendEvent(x, y, buttons);
         return;
+    }
 
     mach_port_t purple(0);
 
