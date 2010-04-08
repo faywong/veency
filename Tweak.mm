@@ -70,6 +70,10 @@ static size_t height_;
 static const size_t BytesPerPixel = 4;
 static const size_t BitsPerSample = 8;
 
+static CoreSurfaceAcceleratorRef accelerator_;
+static CoreSurfaceBufferRef buffer_;
+static CFDictionaryRef options_;
+
 static NSMutableSet *handlers_;
 static rfbScreenInfoPtr screen_;
 static bool running_;
@@ -207,10 +211,10 @@ MSInstanceMessage0(void, VNCAlertItem, performUnlockAction) {
 
 static mach_port_t (*GSTakePurpleSystemEventPort)(void);
 static bool PurpleAllocated;
-static bool Two_;
+static int Level_;
 
 static void FixRecord(GSEventRecord *record) {
-    if (Two_)
+    if (Level_ < 1)
         memmove(&record->windowContextId, &record->windowContextId + 1, sizeof(*record) - (reinterpret_cast<uint8_t *>(&record->windowContextId + 1) - reinterpret_cast<uint8_t *>(record)) + record->size);
 }
 
@@ -266,6 +270,12 @@ static rfbBool VNCCheck(rfbClientPtr client, const char *data, int size) {
 }
 
 static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
+    if (Level_ == 2) {
+        int t(x);
+        x = height_ - 1 - y;
+        y = t;
+    }
+
     x_ = x; y_ = y;
     int diff = buttons_ ^ buttons;
     bool twas((buttons_ & 0x1) != 0);
@@ -454,14 +464,6 @@ static rfbNewClientAction VNCClient(rfbClientPtr client) {
     return action;
 }
 
-static rfbPixel *black_;
-
-static void VNCBlack() {
-    if (_unlikely(black_ == NULL))
-        black_ = reinterpret_cast<rfbPixel *>(mmap(NULL, sizeof(rfbPixel) * width_ * height_, PROT_READ, MAP_ANON | MAP_PRIVATE | MAP_NOCACHE, VM_FLAGS_PURGABLE, 0));
-    screen_->frameBuffer = reinterpret_cast<char *>(black_);
-}
-
 static void VNCSetup() {
     rfbLogEnable(false);
 
@@ -479,13 +481,27 @@ static void VNCSetup() {
 
     screen_->alwaysShared = TRUE;
     screen_->handleEventsEagerly = TRUE;
-    screen_->deferUpdateTime = 5;
+    screen_->deferUpdateTime = 1000 / 25;
 
     screen_->serverFormat.redShift = BitsPerSample * 2;
     screen_->serverFormat.greenShift = BitsPerSample * 1;
     screen_->serverFormat.blueShift = BitsPerSample * 0;
 
-    VNCBlack();
+    buffer_ = CoreSurfaceBufferCreate((CFDictionaryRef) [NSDictionary dictionaryWithObjectsAndKeys:
+        @"PurpleEDRAM", kCoreSurfaceBufferMemoryRegion,
+        [NSNumber numberWithBool:YES], kCoreSurfaceBufferGlobal,
+        [NSNumber numberWithInt:(width_ * BytesPerPixel)], kCoreSurfaceBufferPitch,
+        [NSNumber numberWithInt:width_], kCoreSurfaceBufferWidth,
+        [NSNumber numberWithInt:height_], kCoreSurfaceBufferHeight,
+        [NSNumber numberWithInt:'BGRA'], kCoreSurfaceBufferPixelFormat,
+        [NSNumber numberWithInt:(width_ * height_ * BytesPerPixel)], kCoreSurfaceBufferAllocSize,
+    nil]);
+
+    //screen_->frameBuffer = reinterpret_cast<char *>(mmap(NULL, sizeof(rfbPixel) * width_ * height_, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NOCACHE, VM_FLAGS_PURGABLE, 0));
+
+    CoreSurfaceBufferLock(buffer_, 3);
+    screen_->frameBuffer = reinterpret_cast<char *>(CoreSurfaceBufferGetBaseAddress(buffer_));
+    CoreSurfaceBufferUnlock(buffer_);
 
     screen_->kbdAddEvent = &VNCKeyboard;
     screen_->ptrAddEvent = &VNCPointer;
@@ -548,18 +564,24 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
         VNCEnabled();
         [pool release];
     } else if (_unlikely(clients_ != 0)) {
-        if (buffer == NULL)
-            VNCBlack();
-        else {
-            CoreSurfaceBufferLock(buffer, 2);
-            volatile rfbPixel *data(reinterpret_cast<volatile rfbPixel *>(CoreSurfaceBufferGetBaseAddress(buffer)));
+        if (buffer == NULL) {
+            //CoreSurfaceBufferLock(buffer_, 3);
+            memset(screen_->frameBuffer, 0, sizeof(rfbPixel) * width_ * height_);
+            //CoreSurfaceBufferUnlock(buffer_);
+        } else {
+            //CoreSurfaceBufferLock(buffer_, 3);
+            //CoreSurfaceBufferLock(buffer, 2);
 
-            rfbPixel corner(data[0]);
+            //rfbPixel *data(reinterpret_cast<rfbPixel *>(CoreSurfaceBufferGetBaseAddress(buffer)));
+
+            /*rfbPixel corner(data[0]);
             data[0] = 0;
-            data[0] = corner;
+            data[0] = corner;*/
 
-            screen_->frameBuffer = const_cast<char *>(reinterpret_cast<volatile char *>(data));
-            CoreSurfaceBufferUnlock(buffer);
+            CoreSurfaceAcceleratorTransferSurface(accelerator_, buffer, buffer_, options_);
+
+            //CoreSurfaceBufferUnlock(buffer);
+            //CoreSurfaceBufferUnlock(buffer_);
         }
 
         //CoreSurfaceBufferFlushProcessorCaches(buffer);
@@ -589,7 +611,12 @@ MSInitialize {
         PurpleAllocated = true;
     }
 
-    Two_ = dlsym(RTLD_DEFAULT, "GSEventGetWindowContextId") == NULL;
+    if (dlsym(RTLD_DEFAULT, "GSKeyboardCreate") != NULL)
+        Level_ = 2;
+    else if (dlsym(RTLD_DEFAULT, "GSEventGetWindowContextId") != NULL)
+        Level_ = 1;
+    else
+        Level_ = 0;
 
     MSHookFunction(&IOMobileFramebufferSwapSetLayer, MSHake(IOMobileFramebufferSwapSetLayer));
     MSHookFunction(&rfbRegisterSecurityHandler, MSHake(rfbRegisterSecurityHandler));
@@ -614,8 +641,6 @@ MSInitialize {
     lock_ = [[NSLock alloc] init];
     handlers_ = [[NSMutableSet alloc] init];
 
-    [pool release];
-
     bool value;
 
     value = true;
@@ -625,4 +650,11 @@ MSInitialize {
     cfFalse_ = CFDataCreate(kCFAllocatorDefault, reinterpret_cast<UInt8 *>(&value), sizeof(value));
 
     cfEvent_ = CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, reinterpret_cast<UInt8 *>(&event_), sizeof(event_), kCFAllocatorNull);
+
+    CoreSurfaceAcceleratorCreate(NULL, NULL, &accelerator_);
+
+    options_ = (CFDictionaryRef) [[NSDictionary dictionaryWithObjectsAndKeys:
+    nil] retain];
+
+    [pool release];
 }
