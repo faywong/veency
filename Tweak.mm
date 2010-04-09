@@ -270,6 +270,8 @@ static rfbBool VNCCheck(rfbClientPtr client, const char *data, int size) {
 }
 
 static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
+    CGPoint location = {x, y};
+
     if (Level_ == 2) {
         int t(x);
         x = height_ - 1 - y;
@@ -375,7 +377,7 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
             NSArray *displays([server displays]);
             if (displays != nil && [displays count] != 0)
                 if (CAWindowServerDisplay *display = [displays objectAtIndex:0])
-                    port = [display clientPortAtPosition:event.record.locationInWindow];
+                    port = [display clientPortAtPosition:location];
         }
 
         if (port == 0) {
