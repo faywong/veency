@@ -394,6 +394,9 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
         mach_port_deallocate(mach_task_self(), purple);
 }
 
+GSEventRef (*$GSEventCreateKeyEvent)(int, CGPoint, CFStringRef, CFStringRef, id, UniChar, short, short);
+GSEventRef (*$GSCreateSyntheticKeyEvent)(UniChar, BOOL, BOOL);
+
 static void VNCKeyboard(rfbBool down, rfbKeySym key, rfbClientPtr client) {
     if (!down)
         return;
@@ -406,9 +409,21 @@ static void VNCKeyboard(rfbBool down, rfbKeySym key, rfbClientPtr client) {
     if (key > 0xfff)
         return;
 
-    GSEventRef event(_GSCreateSyntheticKeyEvent(key, YES, YES));
-    GSEventRecord *record(_GSEventGetGSEventRecord(event));
-    record->type = GSEventTypeKeyDown;
+    CGPoint point(CGPointMake(x_, y_));
+
+    UniChar unicode(key);
+    CFStringRef string(NULL);
+
+    GSEventRef event0, event1(NULL);
+    if ($GSEventCreateKeyEvent != NULL) {
+        string = CFStringCreateWithCharacters(kCFAllocatorDefault, &unicode, 1);
+        event0 = (*$GSEventCreateKeyEvent)(10, point, string, string, nil, unicode, 0, 1);
+        event1 = (*$GSEventCreateKeyEvent)(11, point, string, string, nil, unicode, 0, 1);
+    } else if ($GSCreateSyntheticKeyEvent != NULL) {
+        event0 = (*$GSCreateSyntheticKeyEvent)(unicode, YES, YES);
+        GSEventRecord *record(_GSEventGetGSEventRecord(event0));
+        record->type = GSEventTypeKeyDown;
+    } else return;
 
     mach_port_t port(0);
 
@@ -416,7 +431,7 @@ static void VNCKeyboard(rfbBool down, rfbKeySym key, rfbClientPtr client) {
         NSArray *displays([server displays]);
         if (displays != nil && [displays count] != 0)
             if (CAWindowServerDisplay *display = [displays objectAtIndex:0])
-                port = [display clientPortAtPosition:CGPointMake(x_, y_)];
+                port = [display clientPortAtPosition:point];
     }
 
     mach_port_t purple(0);
@@ -427,13 +442,20 @@ static void VNCKeyboard(rfbBool down, rfbKeySym key, rfbClientPtr client) {
         port = purple;
     }
 
-    if (port != 0)
-        GSSendEvent(record, port);
+    if (port != 0) {
+        GSSendEvent(_GSEventGetGSEventRecord(event0), port);
+        if (event1 != NULL)
+            GSSendEvent(_GSEventGetGSEventRecord(event1), port);
+    }
 
     if (purple != 0 && PurpleAllocated)
         mach_port_deallocate(mach_task_self(), purple);
 
-    CFRelease(event);
+    CFRelease(event0);
+    if (event1 != NULL)
+        CFRelease(event1);
+    if (string != NULL)
+        CFRelease(string);
 }
 
 static void VNCDisconnect(rfbClientPtr client) {
@@ -604,6 +626,11 @@ MSHook(void, rfbRegisterSecurityHandler, rfbSecurityHandler *handler) {
     [pool release];
 }
 
+template <typename Type_>
+static void dlset(Type_ &function, const char *name) {
+    function = reinterpret_cast<Type_>(dlsym(RTLD_DEFAULT, name));
+}
+
 MSInitialize {
     NSAutoreleasePool *pool([[NSAutoreleasePool alloc] init]);
 
@@ -619,6 +646,9 @@ MSInitialize {
         Level_ = 1;
     else
         Level_ = 0;
+
+    dlset($GSEventCreateKeyEvent, "GSEventCreateKeyEvent");
+    dlset($GSCreateSyntheticKeyEvent, "_GSCreateSyntheticKeyEvent");
 
     MSHookFunction(&IOMobileFramebufferSwapSetLayer, MSHake(IOMobileFramebufferSwapSetLayer));
     MSHookFunction(&rfbRegisterSecurityHandler, MSHake(rfbRegisterSecurityHandler));
