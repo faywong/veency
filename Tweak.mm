@@ -417,8 +417,8 @@ static void VNCKeyboard(rfbBool down, rfbKeySym key, rfbClientPtr client) {
     GSEventRef event0, event1(NULL);
     if ($GSEventCreateKeyEvent != NULL) {
         string = CFStringCreateWithCharacters(kCFAllocatorDefault, &unicode, 1);
-        event0 = (*$GSEventCreateKeyEvent)(10, point, string, string, nil, unicode, 0, 1);
-        event1 = (*$GSEventCreateKeyEvent)(11, point, string, string, nil, unicode, 0, 1);
+        event0 = (*$GSEventCreateKeyEvent)(10, point, string, string, nil, 0, 0, 1);
+        event1 = (*$GSEventCreateKeyEvent)(11, point, string, string, nil, 0, 0, 1);
     } else if ($GSCreateSyntheticKeyEvent != NULL) {
         event0 = (*$GSCreateSyntheticKeyEvent)(unicode, YES, YES);
         GSEventRecord *record(_GSEventGetGSEventRecord(event0));
