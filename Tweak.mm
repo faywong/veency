@@ -146,6 +146,9 @@ static NSLock *lock_;
 
 static rfbClientPtr client_;
 
+static void VNCSetup();
+static void VNCEnabled();
+
 @interface VNCBridge : NSObject {
 }
 
@@ -170,6 +173,13 @@ static rfbClientPtr client_;
     ++clients_;
     AshikaseSetEnabled(true, false);
     [[$SBStatusBarController sharedStatusBarController] addStatusBarItem:@"Veency"];
+}
+
++ (void) performSetup {
+    NSAutoreleasePool *pool([[NSAutoreleasePool alloc] init]);
+    VNCSetup();
+    VNCEnabled();
+    [pool release];
 }
 
 @end
@@ -576,17 +586,20 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
     CGRect frame,
     int flags
 ) {
-    if (_unlikely(screen_ == NULL)) {
+    if (_unlikely(width_ == 0 || height_ == 0)) {
         CGSize size;
         IOMobileFramebufferGetDisplaySize(fb, &size);
 
         width_ = size.width;
         height_ = size.height;
 
-        NSAutoreleasePool *pool([[NSAutoreleasePool alloc] init]);
-        VNCSetup();
-        VNCEnabled();
-        [pool release];
+        NSThread *thread([[[NSThread alloc]
+            initWithTarget:[VNCBridge class]
+            selector:@selector(performSetup)
+            object:nil
+        ] autorelease]);
+
+        [thread start];
     } else if (_unlikely(clients_ != 0)) {
         if (buffer == NULL) {
             //CoreSurfaceBufferLock(buffer_, 3);
