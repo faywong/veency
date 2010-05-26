@@ -5,7 +5,7 @@ Priority: optional
 Section: Networking
 Maintainer: Jay Freeman (saurik) <saurik@saurik.com>
 Architecture: iphoneos-arm
-Version: 0.9.3192-1
+Version: 0.9.3193-1
 Description: a VNC /server/ for the iPhone
 Name: Veency
 Depends: mobilesubstrate (>= 0.9.2966-1), libvncserver, com.saurik.iphone.ske, preferenceloader, jp.ashikase.mousesupport | firmware (<< 3.0)

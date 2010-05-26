@@ -175,8 +175,9 @@ static void VNCEnabled();
     [[$SBStatusBarController sharedStatusBarController] addStatusBarItem:@"Veency"];
 }
 
-+ (void) performSetup {
++ (void) performSetup:(NSThread *)thread {
     NSAutoreleasePool *pool([[NSAutoreleasePool alloc] init]);
+    [thread autorelease];
     VNCSetup();
     VNCEnabled();
     [pool release];
@@ -593,11 +594,13 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
         width_ = size.width;
         height_ = size.height;
 
-        NSThread *thread([[[NSThread alloc]
+        NSThread *thread([NSThread alloc]);
+
+        [thread
             initWithTarget:[VNCBridge class]
-            selector:@selector(performSetup)
-            object:nil
-        ] autorelease]);
+            selector:@selector(performSetup:)
+            object:thread
+        ];
 
         [thread start];
     } else if (_unlikely(clients_ != 0)) {
