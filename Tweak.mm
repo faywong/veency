@@ -37,6 +37,8 @@
 
 #define _trace() \
     fprintf(stderr, "_trace()@%s:%u[%s]\n", __FILE__, __LINE__, __FUNCTION__)
+#define _likely(expr) \
+    __builtin_expect(expr, 1)
 #define _unlikely(expr) \
     __builtin_expect(expr, 0)
 
@@ -283,7 +285,7 @@ static rfbBool VNCCheck(rfbClientPtr client, const char *data, int size) {
 static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
     CGPoint location = {x, y};
 
-    if (Level_ == 2) {
+    if (width_ > height_) {
         int t(x);
         x = height_ - 1 - y;
         y = t;
@@ -579,6 +581,10 @@ static void VNCNotifyEnabled(
     VNCEnabled();
 }
 
+void (*$IOMobileFramebufferIsMainDisplay)(IOMobileFramebufferRef, bool *);
+
+static IOMobileFramebufferRef main_;
+
 MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
     IOMobileFramebufferRef fb,
     int layer,
@@ -587,12 +593,30 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
     CGRect frame,
     int flags
 ) {
+    bool main = false;
+
+    if (_unlikely(buffer == NULL))
+        main = fb == main_;
+    else if (_unlikely(fb == NULL))
+        main = false;
+    else if ($IOMobileFramebufferIsMainDisplay == NULL)
+        main = true;
+    else
+        (*$IOMobileFramebufferIsMainDisplay)(fb, &main);
+
+    if (_likely(main))
+        main_ = fb;
+    else goto pass;
+
     if (_unlikely(width_ == 0 || height_ == 0)) {
         CGSize size;
         IOMobileFramebufferGetDisplaySize(fb, &size);
 
         width_ = size.width;
         height_ = size.height;
+
+        if (width_ == 0 || height_ == 0)
+            goto pass;
 
         NSThread *thread([NSThread alloc]);
 
@@ -628,6 +652,7 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
         rfbMarkRectAsModified(screen_, 0, 0, width_, height_);
     }
 
+  pass:
     return _IOMobileFramebufferSwapSetLayer(fb, layer, buffer, bounds, frame, flags);
 }
 
@@ -665,6 +690,7 @@ MSInitialize {
 
     dlset($GSEventCreateKeyEvent, "GSEventCreateKeyEvent");
     dlset($GSCreateSyntheticKeyEvent, "_GSCreateSyntheticKeyEvent");
+    dlset($IOMobileFramebufferIsMainDisplay, "IOMobileFramebufferIsMainDisplay");
 
     MSHookFunction(&IOMobileFramebufferSwapSetLayer, MSHake(IOMobileFramebufferSwapSetLayer));
     MSHookFunction(&rfbRegisterSecurityHandler, MSHake(rfbRegisterSecurityHandler));
