@@ -42,7 +42,7 @@
 #define _unlikely(expr) \
     __builtin_expect(expr, 0)
 
-#include <substrate.h>
+#include <CydiaSubstrate.h>
 
 #include <rfb/rfb.h>
 #include <rfb/keysym.h>
@@ -68,6 +68,7 @@ extern "C" void CoreSurfaceBufferFlushProcessorCaches(CoreSurfaceBufferRef buffe
 
 static size_t width_;
 static size_t height_;
+static NSUInteger ratio_ = 0;
 
 static const size_t BytesPerPixel = 4;
 static const size_t BitsPerSample = 8;
@@ -172,6 +173,15 @@ static void VNCEnabled();
 }
 
 + (void) registerClient {
+    // XXX: this could find a better home
+    if (ratio_ == 0) {
+        UIScreen *screen([UIScreen mainScreen]);
+        if ([screen respondsToSelector:@selector(scale)])
+            ratio_ = [screen scale];
+        else
+            ratio_ = 1;
+    }
+
     ++clients_;
     AshikaseSetEnabled(true, false);
     [[$SBStatusBarController sharedStatusBarController] addStatusBarItem:@"Veency"];
@@ -283,11 +293,16 @@ static rfbBool VNCCheck(rfbClientPtr client, const char *data, int size) {
 }
 
 static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
+    if (ratio_ == 0)
+        return;
+    x /= ratio_;
+    y /= ratio_;
+
     CGPoint location = {x, y};
 
     if (width_ > height_) {
         int t(x);
-        x = height_ - 1 - y;
+        x = height_ / ratio_ - 1 - y;
         y = t;
     }
 

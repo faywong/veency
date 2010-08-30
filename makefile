@@ -1,6 +1,6 @@
 name := Veency
 id := vncs
-flags := -lvncserver -framework IOMobileFramebuffer -framework CoreSurface -framework IOKit -framework GraphicsServices -I/apl/inc/iPhoneOS-2.0 -framework QuartzCore -weak_reference_mismatches weak
+flags := -lvncserver -framework IOMobileFramebuffer -framework CoreSurface -framework IOKit -framework GraphicsServices -I/apl/inc/iPhoneOS-2.0 -framework QuartzCore -weak_reference_mismatches weak -framework UIKit
 base := ../tweaks
 include ../tweaks/tweak.mk
 
