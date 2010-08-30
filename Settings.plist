@@ -52,6 +52,8 @@
 	<dict>
 	    <key>cell</key>
 	    <string>PSGroupCell</string>
+            <key>footerText</key>
+            <string>Leaving the password blank will prompt you to accept each incoming connection.</string>
 	</dict>
 
         <dict>
@@ -72,6 +74,11 @@
 	    <string>PSGroupCell</string>
 	    <key>isStaticText</key>
             <true/>
+            <key>requiredCapabilities</key>
+            <array><dict>
+                <key>wildcat</key><false/>
+                <key>voip</key><false/>
+            </dict></array>
 	</dict>
 
 	<dict>
@@ -79,6 +86,11 @@
 	    <string>PSTitleValueCell</string>
 	    <key>label</key>
 	    <string>Leaving the password blank will prompt you to accept each incoming connection.</string>
+            <key>requiredCapabilities</key>
+            <array><dict>
+                <key>wildcat</key><false/>
+                <key>voip</key><false/>
+            </dict></array>
 	</dict>
 
     </array>
