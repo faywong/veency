@@ -88,6 +88,14 @@ static unsigned clients_;
 static CFMessagePortRef ashikase_;
 static bool cursor_;
 
+static rfbPixel *black_;
+
+static void VNCBlack() {
+    if (_unlikely(black_ == NULL))
+        black_ = reinterpret_cast<rfbPixel *>(mmap(NULL, sizeof(rfbPixel) * width_ * height_, PROT_READ, MAP_ANON | MAP_PRIVATE | MAP_NOCACHE, VM_FLAGS_PURGABLE, 0));
+    screen_->frameBuffer = reinterpret_cast<char *>(black_);
+}
+
 static bool Ashikase(bool always) {
     if (!always && !cursor_)
         return false;
@@ -516,6 +524,11 @@ static rfbNewClientAction VNCClient(rfbClientPtr client) {
     return action;
 }
 
+extern "C" bool GSSystemHasCapability(NSString *);
+
+static CFTypeRef (*$GSSystemCopyCapability)(CFStringRef);
+static CFTypeRef (*$GSSystemGetCapability)(CFStringRef);
+
 static void VNCSetup() {
     rfbLogEnable(false);
 
@@ -539,15 +552,41 @@ static void VNCSetup() {
     screen_->serverFormat.greenShift = BitsPerSample * 1;
     screen_->serverFormat.blueShift = BitsPerSample * 0;
 
-    buffer_ = CoreSurfaceBufferCreate((CFDictionaryRef) [NSDictionary dictionaryWithObjectsAndKeys:
-        @"PurpleEDRAM", kCoreSurfaceBufferMemoryRegion,
-        [NSNumber numberWithBool:YES], kCoreSurfaceBufferGlobal,
-        [NSNumber numberWithInt:(width_ * BytesPerPixel)], kCoreSurfaceBufferPitch,
-        [NSNumber numberWithInt:width_], kCoreSurfaceBufferWidth,
-        [NSNumber numberWithInt:height_], kCoreSurfaceBufferHeight,
-        [NSNumber numberWithInt:'BGRA'], kCoreSurfaceBufferPixelFormat,
-        [NSNumber numberWithInt:(width_ * height_ * BytesPerPixel)], kCoreSurfaceBufferAllocSize,
-    nil]);
+    $GSSystemCopyCapability = reinterpret_cast<CFTypeRef (*)(CFStringRef)>(dlsym(RTLD_DEFAULT, "GSSystemCopyCapability"));
+    $GSSystemGetCapability = reinterpret_cast<CFTypeRef (*)(CFStringRef)>(dlsym(RTLD_DEFAULT, "GSSystemGetCapability"));
+
+    CFTypeRef opengles2;
+
+    if ($GSSystemCopyCapability != NULL) {
+        opengles2 = (*$GSSystemCopyCapability)(CFSTR("opengles-2"));
+    } else if ($GSSystemGetCapability != NULL) {
+        opengles2 = (*$GSSystemGetCapability)(CFSTR("opengles-2"));
+        if (opengles2 != NULL)
+            CFRetain(opengles2);
+    } else
+        opengles2 = NULL;
+
+    bool accelerated(opengles2 != NULL && [(NSNumber *)opengles2 boolValue]);
+    accelerated = true;
+
+    if (accelerated)
+        CoreSurfaceAcceleratorCreate(NULL, NULL, &accelerator_);
+
+    if (opengles2 != NULL)
+        CFRelease(opengles2);
+
+    if (accelerator_ != NULL)
+        buffer_ = CoreSurfaceBufferCreate((CFDictionaryRef) [NSDictionary dictionaryWithObjectsAndKeys:
+            @"PurpleEDRAM", kCoreSurfaceBufferMemoryRegion,
+            [NSNumber numberWithBool:YES], kCoreSurfaceBufferGlobal,
+            [NSNumber numberWithInt:(width_ * BytesPerPixel)], kCoreSurfaceBufferPitch,
+            [NSNumber numberWithInt:width_], kCoreSurfaceBufferWidth,
+            [NSNumber numberWithInt:height_], kCoreSurfaceBufferHeight,
+            [NSNumber numberWithInt:'BGRA'], kCoreSurfaceBufferPixelFormat,
+            [NSNumber numberWithInt:(width_ * height_ * BytesPerPixel)], kCoreSurfaceBufferAllocSize,
+        nil]);
+    else
+        VNCBlack();
 
     //screen_->frameBuffer = reinterpret_cast<char *>(mmap(NULL, sizeof(rfbPixel) * width_ * height_, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE | MAP_NOCACHE, VM_FLAGS_PURGABLE, 0));
 
@@ -599,30 +638,9 @@ static void VNCNotifyEnabled(
 void (*$IOMobileFramebufferIsMainDisplay)(IOMobileFramebufferRef, bool *);
 
 static IOMobileFramebufferRef main_;
+static CoreSurfaceBufferRef layer_;
 
-MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
-    IOMobileFramebufferRef fb,
-    int layer,
-    CoreSurfaceBufferRef buffer,
-    CGRect bounds,
-    CGRect frame,
-    int flags
-) {
-    bool main = false;
-
-    if (_unlikely(buffer == NULL))
-        main = fb == main_;
-    else if (_unlikely(fb == NULL))
-        main = false;
-    else if ($IOMobileFramebufferIsMainDisplay == NULL)
-        main = true;
-    else
-        (*$IOMobileFramebufferIsMainDisplay)(fb, &main);
-
-    if (_likely(main))
-        main_ = fb;
-    else goto pass;
-
+static void OnLayer(IOMobileFramebufferRef fb, CoreSurfaceBufferRef layer) {
     if (_unlikely(width_ == 0 || height_ == 0)) {
         CGSize size;
         IOMobileFramebufferGetDisplaySize(fb, &size);
@@ -631,7 +649,7 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
         height_ = size.height;
 
         if (width_ == 0 || height_ == 0)
-            goto pass;
+            return;
 
         NSThread *thread([NSThread alloc]);
 
@@ -643,32 +661,73 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
 
         [thread start];
     } else if (_unlikely(clients_ != 0)) {
-        if (buffer == NULL) {
-            //CoreSurfaceBufferLock(buffer_, 3);
-            memset(screen_->frameBuffer, 0, sizeof(rfbPixel) * width_ * height_);
-            //CoreSurfaceBufferUnlock(buffer_);
+        if (layer == NULL) {
+            if (accelerator_ != NULL)
+                memset(screen_->frameBuffer, 0, sizeof(rfbPixel) * width_ * height_);
+            else
+                VNCBlack();
         } else {
-            //CoreSurfaceBufferLock(buffer_, 3);
-            //CoreSurfaceBufferLock(buffer, 2);
+            if (accelerator_ != NULL)
+                CoreSurfaceAcceleratorTransferSurface(accelerator_, layer, buffer_, options_);
+            else {
+                CoreSurfaceBufferLock(layer, 2);
+                rfbPixel *data(reinterpret_cast<rfbPixel *>(CoreSurfaceBufferGetBaseAddress(layer)));
 
-            //rfbPixel *data(reinterpret_cast<rfbPixel *>(CoreSurfaceBufferGetBaseAddress(buffer)));
+                CoreSurfaceBufferFlushProcessorCaches(layer);
 
-            /*rfbPixel corner(data[0]);
-            data[0] = 0;
-            data[0] = corner;*/
+                /*rfbPixel corner(data[0]);
+                data[0] = 0;
+                data[0] = corner;*/
 
-            CoreSurfaceAcceleratorTransferSurface(accelerator_, buffer, buffer_, options_);
-
-            //CoreSurfaceBufferUnlock(buffer);
-            //CoreSurfaceBufferUnlock(buffer_);
+                screen_->frameBuffer = const_cast<char *>(reinterpret_cast<volatile char *>(data));
+                CoreSurfaceBufferUnlock(layer);
+            }
         }
 
-        //CoreSurfaceBufferFlushProcessorCaches(buffer);
         rfbMarkRectAsModified(screen_, 0, 0, width_, height_);
     }
+}
 
-  pass:
+static bool wait_ = false;
+
+MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
+    IOMobileFramebufferRef fb,
+    int layer,
+    CoreSurfaceBufferRef buffer,
+    CGRect bounds,
+    CGRect frame,
+    int flags
+) {
+    bool main(false);
+
+    if (_unlikely(buffer == NULL))
+        main = fb == main_;
+    else if (_unlikely(fb == NULL))
+        main = false;
+    else if ($IOMobileFramebufferIsMainDisplay == NULL)
+        main = true;
+    else
+        (*$IOMobileFramebufferIsMainDisplay)(fb, &main);
+
+    if (_likely(main)) {
+        main_ = fb;
+        if (wait_)
+            layer_ = buffer;
+        else
+            OnLayer(fb, buffer);
+    }
+
     return _IOMobileFramebufferSwapSetLayer(fb, layer, buffer, bounds, frame, flags);
+}
+
+// XXX: beg rpetrich for the type of this function
+extern "C" void *IOMobileFramebufferSwapWait(IOMobileFramebufferRef, void *, unsigned);
+
+MSHook(void *, IOMobileFramebufferSwapWait, IOMobileFramebufferRef fb, void *arg1, unsigned flags) {
+    void *value(_IOMobileFramebufferSwapWait(fb, arg1, flags));
+    if (fb == main_)
+        OnLayer(fb, layer_);
+    return value;
 }
 
 MSHook(void, rfbRegisterSecurityHandler, rfbSecurityHandler *handler) {
@@ -710,6 +769,9 @@ MSInitialize {
     MSHookFunction(&IOMobileFramebufferSwapSetLayer, MSHake(IOMobileFramebufferSwapSetLayer));
     MSHookFunction(&rfbRegisterSecurityHandler, MSHake(rfbRegisterSecurityHandler));
 
+    if (wait_)
+        MSHookFunction(&IOMobileFramebufferSwapWait, MSHake(IOMobileFramebufferSwapWait));
+
     $VNCAlertItem = objc_allocateClassPair(objc_getClass("SBAlertItem"), "VNCAlertItem", 0);
     MSAddMessage2(VNCAlertItem, "v@:@i", alertSheet,buttonClicked);
     MSAddMessage2(VNCAlertItem, "v@:cc", configure,requirePasscodeForActions);
@@ -739,8 +801,6 @@ MSInitialize {
     cfFalse_ = CFDataCreate(kCFAllocatorDefault, reinterpret_cast<UInt8 *>(&value), sizeof(value));
 
     cfEvent_ = CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, reinterpret_cast<UInt8 *>(&event_), sizeof(event_), kCFAllocatorNull);
-
-    CoreSurfaceAcceleratorCreate(NULL, NULL, &accelerator_);
 
     options_ = (CFDictionaryRef) [[NSDictionary dictionaryWithObjectsAndKeys:
     nil] retain];
