@@ -567,7 +567,6 @@ static void VNCSetup() {
         opengles2 = NULL;
 
     bool accelerated(opengles2 != NULL && [(NSNumber *)opengles2 boolValue]);
-    accelerated = true;
 
     if (accelerated)
         CoreSurfaceAcceleratorCreate(NULL, NULL, &accelerator_);
