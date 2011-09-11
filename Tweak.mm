@@ -49,6 +49,7 @@
 
 #include <mach/mach_port.h>
 #include <sys/mman.h>
+#include <sys/sysctl.h>
 
 #import <QuartzCore/CAWindowServer.h>
 #import <QuartzCore/CAWindowServerDisplay.h>
@@ -300,6 +301,8 @@ static rfbBool VNCCheck(rfbClientPtr client, const char *data, int size) {
     }
 }
 
+static bool iPad1_;
+
 static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
     if (ratio_ == 0)
         return;
@@ -312,6 +315,11 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
         int t(x);
         x = height_ / ratio_ - 1 - y;
         y = t;
+
+        if (!iPad1_) {
+            x = height_ - x;
+            y = width_ - y;
+        }
     }
 
     x_ = x; y_ = y;
@@ -760,6 +768,12 @@ MSInitialize {
         Level_ = 1;
     else
         Level_ = 0;
+
+    size_t size;
+    sysctlbyname("hw.machine", NULL, &size, NULL, 0);
+    char machine[size];
+    sysctlbyname("hw.machine", machine, &size, NULL, 0);
+    iPad1_ = strcmp(machine, "iPad1,1") == 0;
 
     dlset($GSEventCreateKeyEvent, "GSEventCreateKeyEvent");
     dlset($GSCreateSyntheticKeyEvent, "_GSCreateSyntheticKeyEvent");
