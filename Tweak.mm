@@ -306,10 +306,11 @@ static bool iPad1_;
 static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
     if (ratio_ == 0)
         return;
-    x /= ratio_;
-    y /= ratio_;
 
     CGPoint location = {x, y};
+
+    x /= ratio_;
+    y /= ratio_;
 
     if (width_ > height_) {
         int t(x);
