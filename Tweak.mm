@@ -409,7 +409,10 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
         event.data.info.handInfo.x34 = 0x1;
         event.data.info.handInfo.x38 = tis ? 0x1 : 0x0;
 
-        event.data.info.pathPositions = 1;
+        if (Level_ < 3)
+            event.data.info.pathPositions = 1;
+        else
+            event.data.info.x52 = 1;
 
         event.data.path.x00 = 0x01;
         event.data.path.x01 = 0x02;
@@ -763,7 +766,9 @@ MSInitialize {
         PurpleAllocated = true;
     }
 
-    if (dlsym(RTLD_DEFAULT, "GSKeyboardCreate") != NULL)
+    if (dlsym(RTLD_DEFAULT, "GSLibraryCopyGenerationInfoValueForKey") != NULL)
+        Level_ = 3;
+    else if (dlsym(RTLD_DEFAULT, "GSKeyboardCreate") != NULL)
         Level_ = 2;
     else if (dlsym(RTLD_DEFAULT, "GSEventGetWindowContextId") != NULL)
         Level_ = 1;
