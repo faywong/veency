@@ -646,7 +646,7 @@ static void VNCNotifyEnabled(
     VNCEnabled();
 }
 
-void (*$IOMobileFramebufferIsMainDisplay)(IOMobileFramebufferRef, bool *);
+void (*$IOMobileFramebufferIsMainDisplay)(IOMobileFramebufferRef, int *);
 
 static IOMobileFramebufferRef main_;
 static CoreSurfaceBufferRef layer_;
@@ -709,7 +709,7 @@ MSHook(kern_return_t, IOMobileFramebufferSwapSetLayer,
     CGRect frame,
     int flags
 ) {
-    bool main(false);
+    int main(false);
 
     if (_unlikely(buffer == NULL))
         main = fb == main_;
