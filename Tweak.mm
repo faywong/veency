@@ -178,7 +178,11 @@ static void VNCEnabled();
 
 + (void) removeStatusBarItem {
     AshikaseSetEnabled(false, false);
-    [[$SBStatusBarController sharedStatusBarController] removeStatusBarItem:@"Veency"];
+
+    if ($SBStatusBarController != nil)
+        [[$SBStatusBarController sharedStatusBarController] removeStatusBarItem:@"Veency"];
+    else
+        [[UIApplication sharedApplication] removeStatusBarImageNamed:@"Veency"];
 }
 
 + (void) registerClient {
@@ -193,7 +197,11 @@ static void VNCEnabled();
 
     ++clients_;
     AshikaseSetEnabled(true, false);
-    [[$SBStatusBarController sharedStatusBarController] addStatusBarItem:@"Veency"];
+
+    if ($SBStatusBarController != nil)
+        [[$SBStatusBarController sharedStatusBarController] addStatusBarItem:@"Veency"];
+    else
+        [[UIApplication sharedApplication] addStatusBarImageNamed:@"Veency"];
 }
 
 + (void) performSetup:(NSThread *)thread {
