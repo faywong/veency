@@ -768,9 +768,9 @@ static void dlset(Type_ &function, const char *name) {
 MSInitialize {
     NSAutoreleasePool *pool([[NSAutoreleasePool alloc] init]);
 
-    MSHookSymbol(GSTakePurpleSystemEventPort, "GSGetPurpleSystemEventPort");
+    MSHookSymbol(GSTakePurpleSystemEventPort, "_GSGetPurpleSystemEventPort");
     if (GSTakePurpleSystemEventPort == NULL) {
-        MSHookSymbol(GSTakePurpleSystemEventPort, "GSCopyPurpleSystemEventPort");
+        MSHookSymbol(GSTakePurpleSystemEventPort, "_GSCopyPurpleSystemEventPort");
         PurpleAllocated = true;
     }
 
