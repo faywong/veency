@@ -317,19 +317,19 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
 
     CGPoint location = {x, y};
 
-    x /= ratio_;
-    y /= ratio_;
-
     if (width_ > height_) {
         int t(x);
-        x = height_ / ratio_ - 1 - y;
+        x = height_ - 1 - y;
         y = t;
 
         if (!iPad1_) {
-            x = height_ - x;
-            y = width_ - y;
+            x = height_ - 1 - x;
+            y = width_ - 1 - y;
         }
     }
+
+    x /= ratio_;
+    y /= ratio_;
 
     x_ = x; y_ = y;
     int diff = buttons_ ^ buttons;
