@@ -351,7 +351,7 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
 
         memset(&record, 0, sizeof(record));
 
-        record.type = (buttons & 0x4) != 0 ?
+        record.type = (buttons & 0x10) != 0 ?
             GSEventTypeHeadsetButtonDown :
             GSEventTypeHeadsetButtonUp;
 
@@ -366,7 +366,7 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
 
         memset(&record, 0, sizeof(record));
 
-        record.type = (buttons & 0x4) != 0 ?
+        record.type = (buttons & 0x04) != 0 ?
             GSEventTypeMenuButtonDown :
             GSEventTypeMenuButtonUp;
 
@@ -381,7 +381,7 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
 
         memset(&record, 0, sizeof(record));
 
-        record.type = (buttons & 0x2) != 0 ?
+        record.type = (buttons & 0x02) != 0 ?
             GSEventTypeLockButtonDown :
             GSEventTypeLockButtonUp;
 
