@@ -295,6 +295,14 @@ static rfbBool VNCCheck(rfbClientPtr client, const char *data, int size) {
 
 static bool iPad1_;
 
+struct VeencyEvent {
+    struct GSEventRecord record;
+    struct {
+        struct GSEventRecordInfo info;
+        struct GSPathInfo path;
+    } data;
+};
+
 static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
     if (ratio_ == 0)
         return;
@@ -376,13 +384,7 @@ static void VNCPointer(int buttons, int x, int y, rfbClientPtr client) {
     }
 
     if (twas != tis || tis) {
-        struct {
-            struct GSEventRecord record;
-            struct {
-                struct GSEventRecordInfo info;
-                struct GSPathInfo path;
-            } data;
-        } event;
+        struct VeencyEvent event;
 
         memset(&event, 0, sizeof(event));
 
