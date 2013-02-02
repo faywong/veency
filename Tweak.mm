@@ -49,6 +49,8 @@
 #import <SpringBoard/SBDismissOnlyAlertItem.h>
 #import <SpringBoard/SBStatusBarController.h>
 
+#include "SpringBoardAccess.h"
+
 extern "C" void CoreSurfaceBufferFlushProcessorCaches(CoreSurfaceBufferRef buffer);
 
 static size_t width_;
@@ -163,10 +165,12 @@ static void VNCEnabled();
 + (void) removeStatusBarItem {
     AshikaseSetEnabled(false, false);
 
-    if ($SBStatusBarController != nil)
+    if (SBA_available())
+        SBA_removeStatusBarImage(const_cast<char *>("Veency"));
+    else if ($SBStatusBarController != nil)
         [[$SBStatusBarController sharedStatusBarController] removeStatusBarItem:@"Veency"];
-    else
-        [[UIApplication sharedApplication] removeStatusBarImageNamed:@"Veency"];
+    else if (UIApplication *app = [UIApplication sharedApplication])
+        [app removeStatusBarImageNamed:@"Veency"];
 }
 
 + (void) registerClient {
@@ -182,10 +186,12 @@ static void VNCEnabled();
     ++clients_;
     AshikaseSetEnabled(true, false);
 
-    if ($SBStatusBarController != nil)
+    if (SBA_available())
+        SBA_addStatusBarImage(const_cast<char *>("Veency"));
+    else if ($SBStatusBarController != nil)
         [[$SBStatusBarController sharedStatusBarController] addStatusBarItem:@"Veency"];
-    else
-        [[UIApplication sharedApplication] addStatusBarImageNamed:@"Veency"];
+    else if (UIApplication *app = [UIApplication sharedApplication])
+        [app addStatusBarImageNamed:@"Veency"];
 }
 
 + (void) performSetup:(NSThread *)thread {
