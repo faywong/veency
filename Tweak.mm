@@ -139,6 +139,11 @@ MSClassHook(SBStatusBarController)
 @class VNCAlertItem;
 static Class $VNCAlertItem;
 
+static NSString *DialogTitle(@"Remote Access Request");
+static NSString *DialogFormat(@"Accept connection from\n%s?\n\nVeency VNC Server\nby Jay Freeman (saurik)\nsaurik@saurik.com\nhttp://www.saurik.com/\n\nSet a VNC password in Settings!");
+static NSString *DialogAccept(@"Accept");
+static NSString *DialogReject(@"Reject");
+
 static rfbNewClientAction action_ = RFB_CLIENT_ON_HOLD;
 static NSCondition *condition_;
 static NSLock *lock_;
@@ -147,6 +152,20 @@ static rfbClientPtr client_;
 
 static void VNCSetup();
 static void VNCEnabled();
+
+static void OnUserNotification(CFUserNotificationRef notification, CFOptionFlags flags) {
+    [condition_ lock];
+
+    if ((flags & 0x3) == 1)
+        action_ = RFB_CLIENT_ACCEPT;
+    else
+        action_ = RFB_CLIENT_REFUSE;
+
+    [condition_ signal];
+    [condition_ unlock];
+
+    CFRelease(notification);
+}
 
 @interface VNCBridge : NSObject {
 }
@@ -160,14 +179,34 @@ static void VNCEnabled();
 @implementation VNCBridge
 
 + (void) askForConnection {
-    if ($VNCAlertItem != nil)
+    if ($VNCAlertItem != nil) {
         [[$SBAlertItemsController sharedInstance] activateAlertItem:[[[$VNCAlertItem alloc] init] autorelease]];
-    else {
+        return;
+    }
+
+    SInt32 error;
+    CFUserNotificationRef notification(CFUserNotificationCreate(kCFAllocatorDefault, 0, kCFUserNotificationPlainAlertLevel, &error, (CFDictionaryRef) [NSDictionary dictionaryWithObjectsAndKeys:
+        DialogTitle, kCFUserNotificationAlertHeaderKey,
+        [NSString stringWithFormat:DialogFormat, client_->host], kCFUserNotificationAlertMessageKey,
+        DialogAccept, kCFUserNotificationAlternateButtonTitleKey,
+        DialogReject, kCFUserNotificationDefaultButtonTitleKey,
+    nil]));
+
+    if (error != 0) {
+        CFRelease(notification);
+        notification = NULL;
+    }
+
+    if (notification == NULL) {
         [condition_ lock];
         action_ = RFB_CLIENT_REFUSE;
         [condition_ signal];
         [condition_ unlock];
+        return;
     }
+
+    CFRunLoopSourceRef source(CFUserNotificationCreateRunLoopSource(kCFAllocatorDefault, notification, &OnUserNotification, 0));
+    CFRunLoopAddSource(CFRunLoopGetCurrent(), source, kCFRunLoopDefaultMode);
 }
 
 + (void) removeStatusBarItem {
@@ -237,10 +276,10 @@ MSInstanceMessage2(void, VNCAlertItem, alertSheet,buttonClicked, id, sheet, int,
 MSInstanceMessage2(void, VNCAlertItem, configure,requirePasscodeForActions, BOOL, configure, BOOL, require) {
     UIModalView *sheet([self alertSheet]);
     [sheet setDelegate:self];
-    [sheet setTitle:@"Remote Access Request"];
-    [sheet setBodyText:[NSString stringWithFormat:@"Accept connection from\n%s?\n\nVeency VNC Server\nby Jay Freeman (saurik)\nsaurik@saurik.com\nhttp://www.saurik.com/\n\nSet a VNC password in Settings!", client_->host]];
-    [sheet addButtonWithTitle:@"Accept"];
-    [sheet addButtonWithTitle:@"Reject"];
+    [sheet setTitle:DialogTitle];
+    [sheet setBodyText:[NSString stringWithFormat:DialogFormat, client_->host]];
+    [sheet addButtonWithTitle:DialogAccept];
+    [sheet addButtonWithTitle:DialogReject];
 }
 
 MSInstanceMessage0(void, VNCAlertItem, performUnlockAction) {
