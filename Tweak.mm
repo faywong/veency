@@ -132,6 +132,7 @@ static void AshikaseSetEnabled(bool enabled, bool always) {
         AshikaseSendEvent(x_, y_);
 }
 
+MSClassHook(SBAlertItem)
 MSClassHook(SBAlertItemsController)
 MSClassHook(SBStatusBarController)
 
@@ -159,7 +160,14 @@ static void VNCEnabled();
 @implementation VNCBridge
 
 + (void) askForConnection {
-    [[$SBAlertItemsController sharedInstance] activateAlertItem:[[[$VNCAlertItem alloc] init] autorelease]];
+    if ($VNCAlertItem != nil)
+        [[$SBAlertItemsController sharedInstance] activateAlertItem:[[[$VNCAlertItem alloc] init] autorelease]];
+    else {
+        [condition_ lock];
+        action_ = RFB_CLIENT_REFUSE;
+        [condition_ signal];
+        [condition_ unlock];
+    }
 }
 
 + (void) removeStatusBarItem {
@@ -791,11 +799,13 @@ MSInitialize {
     if (wait_)
         MSHookFunction(&IOMobileFramebufferSwapWait, MSHake(IOMobileFramebufferSwapWait));
 
-    $VNCAlertItem = objc_allocateClassPair(objc_getClass("SBAlertItem"), "VNCAlertItem", 0);
-    MSAddMessage2(VNCAlertItem, "v@:@i", alertSheet,buttonClicked);
-    MSAddMessage2(VNCAlertItem, "v@:cc", configure,requirePasscodeForActions);
-    MSAddMessage0(VNCAlertItem, "v@:", performUnlockAction);
-    objc_registerClassPair($VNCAlertItem);
+    if ($SBAlertItem != nil) {
+        $VNCAlertItem = objc_allocateClassPair($SBAlertItem, "VNCAlertItem", 0);
+        MSAddMessage2(VNCAlertItem, "v@:@i", alertSheet,buttonClicked);
+        MSAddMessage2(VNCAlertItem, "v@:cc", configure,requirePasscodeForActions);
+        MSAddMessage0(VNCAlertItem, "v@:", performUnlockAction);
+        objc_registerClassPair($VNCAlertItem);
+    }
 
     CFNotificationCenterAddObserver(
         CFNotificationCenterGetDarwinNotifyCenter(),
