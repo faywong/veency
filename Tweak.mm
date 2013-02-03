@@ -144,7 +144,7 @@ static NSString *DialogFormat(@"Accept connection from\n%s?\n\nVeency VNC Server
 static NSString *DialogAccept(@"Accept");
 static NSString *DialogReject(@"Reject");
 
-static rfbNewClientAction action_ = RFB_CLIENT_ON_HOLD;
+static volatile rfbNewClientAction action_ = RFB_CLIENT_ON_HOLD;
 static NSCondition *condition_;
 static NSLock *lock_;
 
