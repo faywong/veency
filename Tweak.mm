@@ -52,6 +52,7 @@
 #include "SpringBoardAccess.h"
 
 extern "C" void CoreSurfaceBufferFlushProcessorCaches(CoreSurfaceBufferRef buffer);
+extern "C" int CoreSurfaceAcceleratorTransferSurface(CoreSurfaceAcceleratorRef accel, CoreSurfaceBufferRef src, CoreSurfaceBufferRef dst, CFDictionaryRef dict);
 
 static size_t width_;
 static size_t height_;
@@ -136,7 +137,11 @@ MSClassHook(SBAlertItem)
 MSClassHook(SBAlertItemsController)
 MSClassHook(SBStatusBarController)
 
-@class VNCAlertItem;
+//@class VNCAlertItem;
+@interface VNCAlertItem : SBAlertItem {
+
+}
+@end
 static Class $VNCAlertItem;
 
 static NSString *DialogTitle(@"Remote Access Request");
@@ -583,7 +588,7 @@ static rfbNewClientAction VNCClient(rfbClientPtr client) {
     return action;
 }
 
-extern "C" bool GSSystemHasCapability(NSString *);
+//extern "C" bool GSSystemHasCapability(NSString *);
 
 static CFTypeRef (*$GSSystemCopyCapability)(CFStringRef);
 static CFTypeRef (*$GSSystemGetCapability)(CFStringRef);
